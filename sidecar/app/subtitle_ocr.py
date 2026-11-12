@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+import io
+import contextlib
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
+
+from .models import CancelledError
+
+BAND_TOP = 0.86
+BAND_BOTTOM = 0.995
+OCR_WIDTH = 640
+MIN_SCORE = 0.6
+MIN_LINE_RATIO = 0.08
+CHANGE_THRESHOLD = 6.0
+FORCE_INTERVAL_S = 2.0
+SAMPLE_INTERVAL_S = 0.25
+
+_engine = None
+_engine_lock = threading.Lock()
+
+
+@dataclass
+class OcrCue:
+    start_s: float
+    end_s: float
+    text: str
+    score: float
+
+
+def _get_engine():
+    global _engine
+    with _engine_lock:
+        if _engine is None:
+            from rapidocr import RapidOCR
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                _engine = RapidOCR(
+                    params={
+                        "Global.use_cls": False,
+                        "Global.log_level": "error",
+                        "Det.limit_type": "max",
+                        "Det.limit_side_len": 960,
+                    }
+                )
+        return _engine
+
+
+def _crop_band(frame) -> "object":
+    import cv2
+
+    height, width = frame.shape[:2]
+    band = frame[int(height * BAND_TOP) : int(height * BAND_BOTTOM), :]
+    scale = OCR_WIDTH / width
+    return cv2.resize(band, (OCR_WIDTH, max(24, int(band.shape[0] * scale))))
+
+
+def _signature(band) -> "object":
+    import cv2
+    import numpy as np
+
+    gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
+    return cv2.resize(gray, (64, 8)).astype(np.int16)
+
+
+def _read_lines(band) -> list[tuple[str, float]]:
+    """Return (text, score) for the subtitle line(s) in the band."""
+    result = _get_engine()(band)
+    if result.boxes is None or len(result.boxes) == 0:
+        return []
+
+    width = band.shape[1]
+    boxes = []
+    for box, text, score in zip(result.boxes, result.txts or [], result.scores or []):
+        text = (text or "").strip()
+        score = float(score)
+        if not text or score < MIN_SCORE:
+            continue
+        ys = [float(point[1]) for point in box]
+        xs = [float(point[0]) for point in box]
+        boxes.append(
+            {
+                "top": min(ys),
+                "bottom": max(ys),
+                "left": min(xs),
+                "right": max(xs),
+                "text": text,
+                "score": score,
+            }
+        )
+    if not boxes:
+        return []
+
+    boxes.sort(key=lambda item: item["bottom"])
+    anchor = next(
+        (item for item in reversed(boxes) if item["right"] - item["left"] >= width * MIN_LINE_RATIO),
+        None,
+    )
+    if anchor is None:
+        return []
+
+    line_height = max(1.0, anchor["bottom"] - anchor["top"])
+    kept = [
+        item
+        for item in boxes
+        if item["bottom"] >= anchor["top"] - line_height * 1.2
+        and item["right"] > anchor["left"] - (anchor["right"] - anchor["left"]) * 0.2
+        and item["left"] < anchor["right"] + (anchor["right"] - anchor["left"]) * 0.2
+    ]
+    kept.sort(key=lambda item: item["top"])
+    return [(item["text"], item["score"]) for item in kept]
+
+
+def merge_samples(samples: list[tuple[float, str, float]]) -> list[OcrCue]:
+    """Merge per-sample OCR results into cues, extending each cue to the next change."""
+    cues: list[OcrCue] = []
+    current: Optional[OcrCue] = None
+    for timestamp, text, score in samples:
+        if current and text and text == current.text:
+            current.end_s = timestamp
+            current.score = max(current.score, score)
+            continue
+        if current:
+            current.end_s = timestamp
+            cues.append(current)
+            current = None
+        if text:
+            current = OcrCue(start_s=timestamp, end_s=timestamp, text=text, score=score)
+    if current:
+        last = samples[-1][0] if samples else current.start_s
+        current.end_s = max(current.end_s, last)
+        cues.append(current)
+
+    for cue in cues:
+        if cue.end_s < cue.start_s:
+            cue.end_s = cue.start_s
+    return cues
+
+
+def _write_srt(cues: list[OcrCue], out_path: Path) -> None:
+    import pysubs2
+
+    subs = pysubs2.SSAFile()
+    for cue in cues:
+        subs.append(
+            pysubs2.SSAEvent(
+                start=int(round(cue.start_s * 1000)),
+                end=int(round(cue.end_s * 1000)),
+                text=cue.text,
+            )
+        )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    subs.save(str(out_path), format_="srt")
+
+
+def extract_subtitles(
+    video_path: str,
+    out_path: str,
+    progress: Callable[[float, str], None],
+    cancel,
+) -> dict:
+    import av
+    import numpy as np
+
+    container = av.open(video_path)
+    try:
+        stream = container.streams.video[0]
+        duration = float(container.duration / av.time_base) if container.duration else 0.0
+        samples: list[tuple[float, str, float]] = []
+        previous = None
+        last_ocr = -FORCE_INTERVAL_S
+        next_sample = 0.0
+
+        for frame in container.decode(stream):
+            if cancel.is_set():
+                raise CancelledError()
+            timestamp = float(frame.pts * stream.time_base) if frame.pts is not None else next_sample
+            if timestamp < next_sample:
+                continue
+            next_sample = timestamp + SAMPLE_INTERVAL_S
+
+            band = _crop_band(frame.to_ndarray(format="bgr24"))
+            signature = _signature(band)
+            changed = previous is None or float(np.abs(signature - previous).mean()) >= CHANGE_THRESHOLD
+            previous = signature
+            if not changed and timestamp - last_ocr < FORCE_INTERVAL_S:
+                continue
+
+            last_ocr = timestamp
+            lines = _read_lines(band)
+            text = "\n".join(line[0] for line in lines)
+            score = min((line[1] for line in lines), default=0.0)
+            samples.append((timestamp, text, score))
+            if duration > 0:
+                progress(min(0.99, timestamp / duration), f"识别画面字幕 {timestamp:.0f}s")
+    finally:
+        container.close()
+
+    cues = [cue for cue in merge_samples(samples) if cue.text]
+    if not cues:
+        raise RuntimeError("画面中没有检测到字幕，请确认视频是否有烧录字幕。")
+
+    target = Path(out_path)
+    _write_srt(cues, target)
+    progress(1.0, f"已提取 {len(cues)} 条字幕")
+    return {"path": str(target), "cues": len(cues), "durationMs": int(duration * 1000)}
