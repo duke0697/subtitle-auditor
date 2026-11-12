@@ -36,6 +36,39 @@ export interface OcrResult {
   cues: number
 }
 
+export type UpdateStatus =
+  | 'disabled'
+  | 'idle'
+  | 'checking'
+  | 'up-to-date'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+export interface UpdateProgress {
+  percent: number
+  transferred: number
+  total: number
+  bytesPerSecond: number
+}
+
+export interface UpdateState {
+  status: UpdateStatus
+  currentVersion: string
+  latestVersion: string | null
+  progress: UpdateProgress | null
+  error: string | null
+  feed: 'mirror' | 'github' | null
+  manual: boolean
+  checkedAt: string | null
+}
+
+export interface UpdateInstallResult {
+  started: boolean
+  reason?: 'busy' | 'disabled' | 'not-ready'
+}
+
 export interface Api {
   files: {
     pathFor: (file: File) => string
@@ -87,6 +120,12 @@ export interface Api {
     openPath: (path: string) => Promise<void>
     version: () => Promise<string>
   }
+  update: {
+    get: () => Promise<UpdateState>
+    check: (manual: boolean) => Promise<UpdateState>
+    install: () => Promise<UpdateInstallResult>
+    onState: (cb: (state: UpdateState) => void) => () => void
+  }
 }
 
 export const IPC = {
@@ -121,5 +160,9 @@ export const IPC = {
   exportCsv: 'export:csv',
   exportJson: 'export:json',
   appOpenPath: 'app:open-path',
-  appVersion: 'app:version'
+  appVersion: 'app:version',
+  updateGet: 'update:get',
+  updateCheck: 'update:check',
+  updateInstall: 'update:install',
+  updateState: 'update:state'
 } as const

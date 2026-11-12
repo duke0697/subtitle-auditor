@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Captions, Minus, Settings, Square, X } from 'lucide-react'
 import { useApp } from '../store/app'
 import { cn } from '../lib/utils'
+import UpdateBadge from './UpdateBadge'
 
 export default function TitleBar(): React.JSX.Element {
   const [maximized, setMaximized] = useState(false)
@@ -32,6 +33,7 @@ export default function TitleBar(): React.JSX.Element {
       </div>
 
       <div className="no-drag flex items-center gap-1">
+        <UpdateBadge />
         <button
           className={cn('btn btn-ghost btn-icon', view === 'settings' && 'bg-panel3 text-ink')}
           title="设置"

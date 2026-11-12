@@ -6,8 +6,10 @@ import type { AnalyzeRequest, AppSettings } from '@shared/contracts'
 import { IPC } from '@shared/ipc'
 import { buildCsv } from './export'
 import type { FfmpegService } from './ffmpeg'
+import type { JobTracker } from './jobs'
 import type { SettingsStore } from './settings'
 import type { SidecarClient } from './sidecar'
+import type { UpdateService } from './updater'
 
 const VIDEO_FILTER = {
   name: '视频文件',
@@ -22,10 +24,18 @@ export function registerIpc(
   getWindow: () => BrowserWindow | null,
   sidecar: SidecarClient,
   settings: SettingsStore,
-  ffmpeg: FfmpegService
+  ffmpeg: FfmpegService,
+  jobs: JobTracker,
+  updater: UpdateService
 ): void {
   const send = (channel: string, payload: unknown): void => {
-    getWindow()?.webContents.send(channel, payload)
+    const win = getWindow()
+    if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return
+    try {
+      win.webContents.send(channel, payload)
+    } catch {
+      // renderer went away between the checks and the send
+    }
   }
 
   const dialogStartDir = (): string => {
@@ -42,6 +52,8 @@ export function registerIpc(
     settings.set({ lastDir: dirname(filePath) })
   }
 
+  sidecar.on('job-done', (payload: { jobId: string }) => jobs.finish(payload.jobId))
+  sidecar.on('job-error', (payload: { jobId: string }) => jobs.finish(payload.jobId))
   for (const [event, channel] of [
     ['progress', IPC.jobProgress],
     ['asr-segment', IPC.jobSegment],
@@ -53,8 +65,10 @@ export function registerIpc(
     sidecar.on(event, (payload) => send(channel, payload))
   }
   sidecar.on('crash', (error: Error) => {
+    jobs.clear()
     send(IPC.jobError, { jobId: '', message: '分析进程已退出', detail: error.message })
   })
+  updater.onState((state) => send(IPC.updateState, state))
 
   ipcMain.on(IPC.windowMinimize, () => getWindow()?.minimize())
   ipcMain.on(IPC.windowToggleMaximize, () => {
@@ -133,22 +147,42 @@ export function registerIpc(
     await sidecar.ensureStarted()
     return sidecar.request('media.waveform', { path: videoPath, buckets: 1600 }, 120_000)
   })
+  let ocrSeq = 0
   ipcMain.handle(IPC.mediaOcr, async (_event, videoPath: string) => {
-    await sidecar.ensureStarted()
-    const outPath = join(dirname(videoPath), `${basename(videoPath, extname(videoPath))}.ocr.srt`)
-    rememberDir(videoPath)
-    return sidecar.request('ocr.extract', { videoPath, outPath }, 0)
+    const jobKey = `ocr:${++ocrSeq}`
+    jobs.begin(jobKey)
+    try {
+      await sidecar.ensureStarted()
+      const outPath = join(dirname(videoPath), `${basename(videoPath, extname(videoPath))}.ocr.srt`)
+      rememberDir(videoPath)
+      return await sidecar.request('ocr.extract', { videoPath, outPath }, 0)
+    } finally {
+      jobs.finish(jobKey)
+    }
   })
   ipcMain.handle(IPC.mediaOcrCancel, async () => {
     await sidecar.request('cancel', { jobId: 'ocr' }, 10_000)
   })
 
   ipcMain.handle(IPC.jobStart, async (_event, req: AnalyzeRequest) => {
-    await sidecar.ensureStarted()
-    await sidecar.request('analyze', req, 30_000)
+    jobs.begin(req.jobId)
+    try {
+      await sidecar.ensureStarted()
+      await sidecar.request('analyze', req, 30_000)
+    } catch (error) {
+      // A timeout keeps the request queued in the sidecar; keep the guard until
+      // the matching job event arrives, and cancel so it cannot start later.
+      if (sidecar.running) {
+        void sidecar.request('cancel', { jobId: req.jobId }, 5_000).catch(() => undefined)
+      } else {
+        jobs.finish(req.jobId)
+      }
+      throw error
+    }
   })
   ipcMain.handle(IPC.jobCancel, async (_event, jobId: string) => {
     await sidecar.request('cancel', { jobId }, 10_000)
+    jobs.finish(jobId)
   })
 
   ipcMain.handle(IPC.modelsList, async () => {
@@ -156,12 +190,22 @@ export function registerIpc(
     return sidecar.request('models.list', {}, 30_000)
   })
   ipcMain.handle(IPC.modelsDownload, async (_event, name: string) => {
-    await sidecar.ensureStarted()
-    return sidecar.request('models.download', { name, mirror: settings.get().hfMirror }, 0)
+    jobs.begin('models')
+    try {
+      await sidecar.ensureStarted()
+      return await sidecar.request('models.download', { name, mirror: settings.get().hfMirror }, 0)
+    } finally {
+      jobs.finish('models')
+    }
   })
   ipcMain.handle(IPC.modelsInstallGpu, async () => {
-    await sidecar.ensureStarted()
-    return sidecar.request('models.installGpu', {}, 0)
+    jobs.begin('gpu')
+    try {
+      await sidecar.ensureStarted()
+      return await sidecar.request('models.installGpu', {}, 0)
+    } finally {
+      jobs.finish('gpu')
+    }
   })
 
   ipcMain.handle(IPC.settingsGet, () => settings.get())
@@ -197,4 +241,8 @@ export function registerIpc(
     await shell.openPath(path)
   })
   ipcMain.handle(IPC.appVersion, () => app.getVersion())
+
+  ipcMain.handle(IPC.updateGet, () => updater.getState())
+  ipcMain.handle(IPC.updateCheck, (_event, manual: boolean) => updater.check(Boolean(manual)))
+  ipcMain.handle(IPC.updateInstall, () => updater.install())
 }

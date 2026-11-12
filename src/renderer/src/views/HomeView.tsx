@@ -36,6 +36,7 @@ export default function HomeView(): React.JSX.Element {
   const models = useApp((state) => state.models)
   const settings = useApp((state) => state.settings)
   const modelProgress = useApp((state) => state.modelProgress)
+  const ocrProgress = useApp((state) => state.ocrProgress)
   const error = useApp((state) => state.error)
   const chooseVideo = useApp((state) => state.chooseVideo)
   const chooseSubtitle = useApp((state) => state.chooseSubtitle)
@@ -250,6 +251,7 @@ export default function HomeView(): React.JSX.Element {
               {videoPath && (
                 <button
                   className="btn btn-ghost mt-3 h-9 w-full text-[12px]"
+                  disabled={ocrProgress !== null}
                   onClick={() => void generateSubtitles()}
                 >
                   <ScanText size={14} /> 从画面提取字幕（OCR）

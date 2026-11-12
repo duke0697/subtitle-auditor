@@ -11,10 +11,12 @@ import { useApp } from './store/app'
 export default function App(): React.JSX.Element {
   const view = useApp((state) => state.view)
   const boot = useApp((state) => state.boot)
+  const initUpdate = useApp((state) => state.initUpdate)
 
   useEffect(() => {
     void boot()
-  }, [boot])
+    void initUpdate()
+  }, [boot, initUpdate])
 
   useEffect(() => {
     const offs = [
@@ -23,7 +25,8 @@ export default function App(): React.JSX.Element {
       window.api.job.onDone((event) => useApp.getState().onDone(event.result)),
       window.api.job.onError((event) => useApp.getState().onError(event.message)),
       window.api.models.onProgress((event) => useApp.getState().onModelProgress(event)),
-      window.api.media.onOcrProgress((event) => useApp.getState().onOcrProgress(event))
+      window.api.media.onOcrProgress((event) => useApp.getState().onOcrProgress(event)),
+      window.api.update.onState((event) => useApp.getState().onUpdateState(event))
     ]
     return () => offs.forEach((off) => off())
   }, [])

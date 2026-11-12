@@ -30,3 +30,8 @@ nsis:
   shortcutName: 字幕校对台
   artifactName: SubtitleAuditor-Setup-${version}.${ext}
   deleteAppDataOnUninstall: false
+publish:
+  provider: github
+  owner: duke0697
+  repo: subtitle-auditor
+  releaseType: release

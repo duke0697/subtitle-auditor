@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { IPC, type Api, type ModelProgress, type OcrProgress, type OcrResult, type PreviewProgress, type Waveform } from '../shared/ipc'
+import {
+  IPC,
+  type Api,
+  type ModelProgress,
+  type OcrProgress,
+  type OcrResult,
+  type PreviewProgress,
+  type UpdateInstallResult,
+  type UpdateState,
+  type Waveform
+} from '../shared/ipc'
 import type {
   AnalysisResult,
   AnalyzeRequest,
@@ -73,6 +83,12 @@ const api: Api = {
   app: {
     openPath: (path) => ipcRenderer.invoke(IPC.appOpenPath, path) as Promise<void>,
     version: () => ipcRenderer.invoke(IPC.appVersion) as Promise<string>
+  },
+  update: {
+    get: () => ipcRenderer.invoke(IPC.updateGet) as Promise<UpdateState>,
+    check: (manual) => ipcRenderer.invoke(IPC.updateCheck, manual) as Promise<UpdateState>,
+    install: () => ipcRenderer.invoke(IPC.updateInstall) as Promise<UpdateInstallResult>,
+    onState: (cb) => subscribe<UpdateState>(IPC.updateState, cb)
   }
 }
 

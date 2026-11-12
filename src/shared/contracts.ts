@@ -189,6 +189,7 @@ export interface AppSettings {
   device: DeviceMode
   language: string | null
   hfMirror: string
+  updateMirror: string
   lastDir: string | null
   options: AnalysisOptions
   window: { width: number; height: number; x?: number; y?: number }
@@ -213,6 +214,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   device: 'auto',
   language: null,
   hfMirror: '',
+  updateMirror: 'https://ghfast.top/',
   lastDir: null,
   options: DEFAULT_OPTIONS,
   window: { width: 1360, height: 860 }

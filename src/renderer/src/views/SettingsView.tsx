@@ -15,6 +15,7 @@ import type { AnalysisOptions } from '@shared/contracts'
 import { AUTOMOTIVE_GLOSSARY } from '@shared/glossary'
 import { formatBytes, cn } from '../lib/utils'
 import { useApp } from '../store/app'
+import UpdateCard from '../components/UpdateCard'
 
 function parseGlossary(text: string): string[] {
   return text
@@ -348,6 +349,10 @@ export default function SettingsView(): React.JSX.Element {
               />
             </div>
           </section>
+        </div>
+
+        <div className="mt-4">
+          <UpdateCard />
         </div>
 
         <div className="mt-4 rounded-xl border border-line bg-panel px-4 py-3 text-[10.5px] leading-relaxed text-muted">

@@ -4,8 +4,10 @@ import { extname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { FfmpegService } from './ffmpeg'
 import { registerIpc } from './ipc'
+import { JobTracker } from './jobs'
 import { SettingsStore } from './settings'
 import { SidecarClient } from './sidecar'
+import { UpdateService } from './updater'
 import { createMainWindow } from './window'
 
 let mainWindow: BrowserWindow | null = null
@@ -86,6 +88,12 @@ if (!gotLock) {
 const settings = new SettingsStore()
 const sidecar = new SidecarClient()
 const ffmpeg = new FfmpegService()
+const jobs = new JobTracker()
+const updater = new UpdateService(
+  settings,
+  () => jobs.busy,
+  () => sidecar.stop()
+)
 
 function openWindow(): void {
   mainWindow = createMainWindow(settings.get())
@@ -106,8 +114,9 @@ if (gotLock) {
       if (!filePath) return new Response('missing path', { status: 400 })
       return serveMedia(filePath, request.headers.get('Range'))
     })
-    registerIpc(() => mainWindow, sidecar, settings, ffmpeg)
+    registerIpc(() => mainWindow, sidecar, settings, ffmpeg, jobs, updater)
     openWindow()
+    updater.scheduleAutoCheck()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) openWindow()

@@ -50,6 +50,25 @@ npm run dist
 # 产物：dist/SubtitleAuditor-Setup-0.1.0.exe
 ```
 
+## 自动更新
+
+打包版启动约 10 秒后自动检查 GitHub Releases，发现新版本在后台下载，完成后可在设置页「软件更新」重启安装；有分析任务运行时会阻止重启，避免丢失审查结果。开发模式下不检查更新。
+
+默认通过 `https://ghfast.top/` 镜像访问 GitHub，镜像不可用时自动回退直连；设置页可修改镜像前缀，留空则只走直连。
+
+## 发布新版本
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+GitHub Actions 会重建 sidecar 与 ffmpeg、打包 NSIS 安装包，并发布 Release（含 `latest.yml` 与 `.blockmap`）。本地发布需提供 `GH_TOKEN`：
+
+```bash
+GH_TOKEN=<token> npm run release
+```
+
 ## 目录
 
 - `src/main` Electron 主进程：窗口、IPC、sidecar 生命周期、ffmpeg 预览

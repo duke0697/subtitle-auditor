@@ -26,6 +26,10 @@ export class SidecarClient extends EventEmitter {
   private starting: Promise<void> | null = null
   private stopping = false
 
+  get running(): boolean {
+    return this.proc !== null
+  }
+
   async ensureStarted(): Promise<void> {
     if (this.proc) return
     if (this.starting) return this.starting
@@ -40,6 +44,7 @@ export class SidecarClient extends EventEmitter {
       })
       proc.once('spawn', () => {
         this.proc = proc
+        this.stopping = false
         this.reader = createInterface({ input: proc.stdout })
         this.reader.on('line', (line) => this.onLine(line))
         proc.stderr.on('data', (chunk: Buffer) => {

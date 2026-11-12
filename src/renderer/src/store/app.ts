@@ -11,7 +11,7 @@ import {
   type ModelInfo,
   type Severity
 } from '@shared/contracts'
-import type { ModelProgress } from '@shared/ipc'
+import type { ModelProgress, UpdateState } from '@shared/ipc'
 
 export type View = 'home' | 'processing' | 'results' | 'settings' | 'ocr'
 export type ReviewState = 'reviewed' | 'ignored'
@@ -48,8 +48,13 @@ interface AppState {
   waveform: number[] | null
   ocrProgress: { progress: number; message: string } | null
   toast: string | null
+  update: UpdateState | null
 
   boot: () => Promise<void>
+  initUpdate: () => Promise<void>
+  checkUpdate: (manual: boolean) => Promise<void>
+  restartUpdate: () => Promise<void>
+  onUpdateState: (state: UpdateState) => void
   setView: (view: View) => void
   setSettings: (patch: Partial<AppSettings>) => Promise<void>
   chooseVideo: (path: string) => Promise<void>
@@ -141,6 +146,7 @@ export const useApp = create<AppState>((set, get) => ({
   waveform: null,
   ocrProgress: null,
   toast: null,
+  update: null,
 
   boot: async () => {
     try {
@@ -155,6 +161,41 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   setView: (view) => set({ view }),
+
+  initUpdate: async () => {
+    try {
+      set({ update: await window.api.update.get() })
+    } catch {
+      // updater state stays unknown; the settings card falls back to disabled
+    }
+  },
+
+  checkUpdate: async (manual) => {
+    try {
+      set({ update: await window.api.update.check(manual) })
+    } catch (error) {
+      set({ toast: (error as Error).message })
+    }
+  },
+
+  restartUpdate: async () => {
+    try {
+      const result = await window.api.update.install()
+      if (result.started) return
+      set({
+        toast:
+          result.reason === 'busy'
+            ? '分析任务运行中，完成后才能重启安装'
+            : result.reason === 'disabled'
+              ? '开发模式下不支持自动更新'
+              : '更新尚未就绪'
+      })
+    } catch (error) {
+      set({ toast: (error as Error).message })
+    }
+  },
+
+  onUpdateState: (state) => set({ update: state }),
 
   setSettings: async (patch) => {
     const settings = await window.api.settings.set(patch)
@@ -273,7 +314,7 @@ export const useApp = create<AppState>((set, get) => ({
         options: { ...settings.options, model: settings.model, device: settings.device, language: settings.language }
       })
     } catch (error) {
-      set({ error: (error as Error).message, view: 'home' })
+      set({ error: (error as Error).message, view: 'home', jobId: null, progress: null })
     }
   },
 
