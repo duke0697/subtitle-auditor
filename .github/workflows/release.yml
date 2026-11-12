@@ -46,15 +46,58 @@ jobs:
 
       - run: npm run build
 
-      - name: Publish release
+      - name: Package installer
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --win nsis --x64 --publish always
+        run: npx electron-builder --win nsis --x64 --publish never
 
-      - name: Verify update metadata
+      - name: Verify local artifacts
         shell: bash
         run: |
           test -f dist/latest.yml
           test -f dist/win-unpacked/resources/app-update.yml
           grep -q "version: ${GITHUB_REF_NAME#v}" dist/latest.yml
+          ls dist/SubtitleAuditor-Setup-*.exe dist/SubtitleAuditor-Setup-*.exe.blockmap
+
+      - name: Create draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notes=$(cat <<EOF
+          ## 字幕校对台 ${GITHUB_REF_NAME}
+
+          ### 新增
+          - 软件自动更新：启动后自动检查、后台下载、重启安装
+          - 默认 GitHub 镜像加速，失败自动回退直连；镜像前缀可在设置页修改
+          - 标题栏更新状态提示，设置页「软件更新」卡片
+
+          ### 说明
+          - 分析、OCR、模型下载运行中会阻止重启安装，避免丢失审查结果
+          - 安装包未签名，首次安装可能出现 SmartScreen 提示
+          EOF
+          )
+          gh release create "$GITHUB_REF_NAME" \
+            dist/SubtitleAuditor-Setup-*.exe \
+            dist/latest.yml \
+            dist/SubtitleAuditor-Setup-*.exe.blockmap \
+            --title "字幕校对台 ${GITHUB_REF_NAME}" \
+            --notes "$notes" \
+            --draft \
+            --verify-tag
+
+      - name: Verify release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > assets.txt
+          grep -q "^latest.yml$" assets.txt
+          grep -q "\.exe$" assets.txt
+          grep -q "\.blockmap$" assets.txt
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
