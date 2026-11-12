@@ -6,6 +6,7 @@ import type { SettingsStore } from './settings'
 const DIRECT_FEED = 'https://github.com/duke0697/subtitle-auditor/releases/latest/download/'
 const PREFLIGHT_TIMEOUT_MS = 15_000
 const AUTO_CHECK_DELAY_MS = 10_000
+const AUTO_CHECK_INTERVAL_MS = 10 * 60_000
 
 interface Feed {
   kind: 'mirror' | 'github'
@@ -81,10 +82,13 @@ export class UpdateService {
   scheduleAutoCheck(): void {
     if (!app.isPackaged) return
     setTimeout(() => void this.check(false), AUTO_CHECK_DELAY_MS)
+    setInterval(() => void this.check(false), AUTO_CHECK_INTERVAL_MS)
   }
 
   async check(manual: boolean): Promise<UpdateState> {
-    if (!app.isPackaged || this.checking || this.downloading) return this.getState()
+    if (!app.isPackaged || this.checking || this.downloading || this.state.status === 'downloaded') {
+      return this.getState()
+    }
     this.checking = true
     this.lastPercent = -1
     this.patch({ status: 'checking', manual, error: null, progress: null, latestVersion: null })
