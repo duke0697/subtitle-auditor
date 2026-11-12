@@ -1,6 +1,8 @@
 node_modules/
 out/
 dist/
+dist-local/
+dist-check/
 resources/sidecar/
 resources/ffmpeg/
 sidecar/.venv/
