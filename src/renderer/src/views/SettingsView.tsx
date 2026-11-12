@@ -12,7 +12,7 @@ import {
   Sparkles
 } from 'lucide-react'
 import type { AnalysisOptions } from '@shared/contracts'
-import { AUTOMOTIVE_GLOSSARY } from '@shared/glossary'
+import { AUTOMOTIVE_GLOSSARY, ROBOTICS_GLOSSARY } from '@shared/glossary'
 import { formatBytes, cn } from '../lib/utils'
 import { useApp } from '../store/app'
 import UpdateCard from '../components/UpdateCard'
@@ -74,6 +74,9 @@ export default function SettingsView(): React.JSX.Element {
   const result = useApp((state) => state.result)
   const [mirror, setMirror] = useState(settings.hfMirror)
   const [glossaryText, setGlossaryText] = useState(() => settings.options.glossary.join('\n'))
+  const [glossaryPreset, setGlossaryPreset] = useState<'automotive' | 'robotics'>(() =>
+    settings.options.glossary.join('\n') === ROBOTICS_GLOSSARY.join('\n') ? 'robotics' : 'automotive'
+  )
   const [version, setVersion] = useState('')
 
   useEffect(() => {
@@ -88,10 +91,11 @@ export default function SettingsView(): React.JSX.Element {
     void setSettings({ options: { ...settings.options, ...patch } })
   }
 
-  const applyAutomotiveGlossary = (): void => {
-    const merged = [...new Set([...parseGlossary(glossaryText), ...AUTOMOTIVE_GLOSSARY])]
-    setGlossaryText(merged.join('\n'))
-    void setSettings({ options: { ...settings.options, glossary: merged } })
+  const applyPreset = (preset: 'automotive' | 'robotics'): void => {
+    const terms = preset === 'robotics' ? ROBOTICS_GLOSSARY : AUTOMOTIVE_GLOSSARY
+    setGlossaryPreset(preset)
+    setGlossaryText(terms.join('\n'))
+    void setSettings({ options: { ...settings.options, glossary: [...terms] } })
   }
 
   const gpuInstalling = modelProgress?.name === 'gpu'
@@ -227,12 +231,15 @@ export default function SettingsView(): React.JSX.Element {
 
             <div className="mb-1 flex items-center justify-between">
               <label className="block text-[11px] text-muted">专业术语表</label>
-              <button
-                className="text-[10.5px] text-accent hover:underline"
-                onClick={applyAutomotiveGlossary}
+              <select
+                className="input"
+                style={{ height: 26, width: 112, padding: '0 6px', fontSize: 10.5 }}
+                value={glossaryPreset}
+                onChange={(event) => applyPreset(event.target.value as 'automotive' | 'robotics')}
               >
-                载入汽车术语表
-              </button>
+                <option value="automotive">汽车专业</option>
+                <option value="robotics">机器人专业</option>
+              </select>
             </div>
             <textarea
               className="mb-1 w-full resize-none rounded-lg border border-line bg-canvas px-2.5 py-2 text-[11.5px] leading-relaxed text-ink outline-none focus:border-accent/60"
@@ -248,7 +255,7 @@ export default function SettingsView(): React.JSX.Element {
               }}
             />
             <p className="mb-3 text-[10.5px] leading-relaxed text-muted">
-              每行一个。术语会拼成提示词引导简体输出；ASR 中的同音误识别（如「实讯」）会按术语表自动改写，字幕文件不受影响。提示词：
+              每行一个。下拉切换会替换为对应专业术语表（默认汽车），可再自行增删。术语会拼成提示词引导简体输出；ASR 中的同音误识别（如「实讯」）会按术语表自动改写，字幕文件不受影响。提示词：
               <span className="text-ink2">
                 {settings.options.glossary.length
                   ? `以下是普通话讲解，涉及${settings.options.glossary.slice(0, 6).join('、')}等术语。`
