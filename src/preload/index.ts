@@ -78,7 +78,8 @@ const api: Api = {
   },
   export: {
     csv: (result: AnalysisResult) => ipcRenderer.invoke(IPC.exportCsv, result) as Promise<string | null>,
-    json: (result: AnalysisResult) => ipcRenderer.invoke(IPC.exportJson, result) as Promise<string | null>
+    json: (result: AnalysisResult) => ipcRenderer.invoke(IPC.exportJson, result) as Promise<string | null>,
+    excel: (result: AnalysisResult) => ipcRenderer.invoke(IPC.exportExcel, result) as Promise<string | null>
   },
   app: {
     openPath: (path) => ipcRenderer.invoke(IPC.appOpenPath, path) as Promise<void>,

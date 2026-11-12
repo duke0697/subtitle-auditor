@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react'
-import { CheckCircle2, Download, FileJson, FolderPlus, ScanText, Settings } from 'lucide-react'
+import { CheckCircle2, FileSpreadsheet, FolderPlus, Settings } from 'lucide-react'
 import type { Cue, Finding } from '@shared/contracts'
 import FilterBar from '../components/FilterBar'
 import IssueDetail from '../components/IssueDetail'
@@ -38,10 +38,8 @@ export default function ResultsView(): React.JSX.Element {
   const setSeekTo = useApp((state) => state.setSeekTo)
   const preparePreview = useApp((state) => state.preparePreview)
   const loadWaveform = useApp((state) => state.loadWaveform)
-  const exportCsv = useApp((state) => state.exportCsv)
-  const exportJson = useApp((state) => state.exportJson)
+  const exportExcel = useApp((state) => state.exportExcel)
   const resetSession = useApp((state) => state.resetSession)
-  const generateSubtitles = useApp((state) => state.generateSubtitles)
   const setView = useApp((state) => state.setView)
   const setToast = useApp((state) => state.setToast)
 
@@ -191,14 +189,8 @@ export default function ResultsView(): React.JSX.Element {
             )}
           </div>
           <div className="flex items-center gap-1.5">
-            <button className="btn h-7 px-2 text-[11px]" onClick={() => void exportCsv()}>
-              <Download size={12} /> CSV
-            </button>
-            <button className="btn h-7 px-2 text-[11px]" onClick={() => void exportJson()}>
-              <FileJson size={12} /> JSON
-            </button>
-            <button className="btn h-7 px-2 text-[11px]" onClick={() => void generateSubtitles()}>
-              <ScanText size={12} /> 提取字幕
+            <button className="btn h-7 px-2 text-[11px]" onClick={() => void exportExcel()}>
+              <FileSpreadsheet size={12} /> Excel
             </button>
             <button className="btn h-7 px-2 text-[11px]" onClick={resetSession}>
               <FolderPlus size={12} /> 新任务

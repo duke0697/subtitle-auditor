@@ -4,7 +4,7 @@ import { basename, dirname, extname, join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
 import type { AnalyzeRequest, AppSettings } from '@shared/contracts'
 import { IPC } from '@shared/ipc'
-import { buildCsv } from './export'
+import { buildCsv, buildWorkbook } from './export'
 import type { FfmpegService } from './ffmpeg'
 import type { JobTracker } from './jobs'
 import type { SettingsStore } from './settings'
@@ -234,6 +234,19 @@ export function registerIpc(
     })
     if (save.canceled || !save.filePath) return null
     await writeFile(save.filePath, JSON.stringify(result, null, 2), 'utf8')
+    return save.filePath
+  })
+
+  ipcMain.handle(IPC.exportExcel, async (_event, result) => {
+    const win = getWindow()
+    if (!win) return null
+    const save = await dialog.showSaveDialog(win, {
+      title: '导出 Excel 报告',
+      defaultPath: `字幕审查报告-${Date.now()}.xlsx`,
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+    })
+    if (save.canceled || !save.filePath) return null
+    await writeFile(save.filePath, await buildWorkbook(result))
     return save.filePath
   })
 

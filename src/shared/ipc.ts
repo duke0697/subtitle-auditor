@@ -115,6 +115,7 @@ export interface Api {
   export: {
     csv: (result: AnalysisResult) => Promise<string | null>
     json: (result: AnalysisResult) => Promise<string | null>
+    excel: (result: AnalysisResult) => Promise<string | null>
   }
   app: {
     openPath: (path: string) => Promise<void>
@@ -159,6 +160,7 @@ export const IPC = {
   settingsSet: 'settings:set',
   exportCsv: 'export:csv',
   exportJson: 'export:json',
+  exportExcel: 'export:excel',
   appOpenPath: 'app:open-path',
   appVersion: 'app:version',
   updateGet: 'update:get',

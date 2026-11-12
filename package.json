@@ -1,6 +1,6 @@
 {
   "name": "subtitle-auditor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Windows desktop subtitle auditing tool (ASR confidence + diff)",
   "main": "./out/main/index.js",
   "author": "Boss",
@@ -51,6 +51,7 @@
     "zustand": "^5.1.0"
   },
   "dependencies": {
-    "electron-updater": "^6.8.11"
+    "electron-updater": "^6.8.11",
+    "exceljs": "^4.4.0"
   }
 }

@@ -83,6 +83,7 @@ interface AppState {
   loadWaveform: () => Promise<void>
   exportCsv: () => Promise<void>
   exportJson: () => Promise<void>
+  exportExcel: () => Promise<void>
   setToast: (message: string | null) => void
   resetSession: () => void
 }
@@ -106,6 +107,15 @@ export function filteredFindings(state: AppState): Finding[] {
 export function reviewProgress(state: AppState): { done: number; total: number } {
   const total = state.result?.findings.length ?? 0
   return { done: Object.keys(state.reviewState).length, total }
+}
+
+/** Export payload without ignored findings; kind counts follow the kept rows. */
+function exportResult(state: AppState): AnalysisResult | null {
+  if (!state.result) return null
+  const findings = state.result.findings.filter((finding) => state.reviewState[finding.id] !== 'ignored')
+  const counts: Record<IssueKind, number> = { typo: 0, content: 0, timing: 0, uncertain: 0 }
+  for (const finding of findings) counts[finding.kind]++
+  return { ...state.result, findings, summary: { ...state.result.summary, counts } }
 }
 
 const emptyFilters: Filters = {
@@ -414,16 +424,23 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   exportCsv: async () => {
-    const { result } = get()
-    if (!result) return
-    const path = await window.api.export.csv(result)
+    const payload = exportResult(get())
+    if (!payload) return
+    const path = await window.api.export.csv(payload)
     if (path) set({ toast: `已导出：${path}` })
   },
 
   exportJson: async () => {
-    const { result } = get()
-    if (!result) return
-    const path = await window.api.export.json(result)
+    const payload = exportResult(get())
+    if (!payload) return
+    const path = await window.api.export.json(payload)
+    if (path) set({ toast: `已导出：${path}` })
+  },
+
+  exportExcel: async () => {
+    const payload = exportResult(get())
+    if (!payload) return
+    const path = await window.api.export.excel(payload)
     if (path) set({ toast: `已导出：${path}` })
   },
 

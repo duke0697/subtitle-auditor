@@ -17,7 +17,7 @@ Windows 桌面端视频字幕审查工具：本地 ASR 词级置信度 + 字幕�
 3. 视频没有字幕、只有画面上的硬字幕时，在首页点「从画面提取字幕（OCR）」，生成同名 `.ocr.srt` 并自动选中（5 分钟视频约 1–2 分钟）。
 4. 首次使用下载识别模型（默认 medium；有 NVIDIA 显卡可选装 GPU 组件）。
 5. 点击「开始审查」，结果页用 `N/P` 切换问题、`Enter` 标记已核对、`I` 忽略、`←/→` 快退快进。
-6. 右上角导出 CSV / JSON 报告。
+6. 结果页右上角点击「Excel」导出可读报告：概览、问题清单、字幕对照三张工作表，标记为「已忽略」的问题不会导出。
 
 模型与缓存位于 `%LOCALAPPDATA%\SubtitleAuditor`。应用配置位于 `%APPDATA%\SubtitleAuditor\settings.json`。
 
