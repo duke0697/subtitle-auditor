@@ -22,6 +22,10 @@ def build_timing_findings(
     offset = bundle.global_offset_ms or 0
     threshold = float(options.get("globalOffsetMs", 500))
     tolerance = float(options.get("timingToleranceMs", 500))
+    if options.get("ocrSource"):
+        # OCR cue times come from when the text appears on screen, which naturally leads
+        # the speech; the display lead is not a timeline defect worth reviewing.
+        tolerance = max(tolerance, 1500.0)
 
     if bundle.global_offset_ms is not None and abs(bundle.global_offset_ms) >= threshold:
         direction = "晚于" if bundle.global_offset_ms > 0 else "早于"

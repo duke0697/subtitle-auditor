@@ -41,10 +41,11 @@ def _additive_asr_noise(alignment: CueAlignment) -> bool:
     """True when ASR only added a few syllables on top of the subtitle reading.
 
     Insertions are ASR hallucinations or extra speech; they do not contradict the
-    subtitle, so they must not be reported as a subtitle error.
+    subtitle, so they must not be reported as a subtitle error. The syllable
+    subsequence test also catches them when the aligner encodes them as a replace.
     """
-    sub = [primary_reading(char) for char in alignment.sub_norm if _is_cjk(char)]
-    asr = [primary_reading(char) for char in alignment.asr_norm if _is_cjk(char)]
+    sub = [primary_reading(char) for char in alignment.sub_norm]
+    asr = [primary_reading(char) for char in alignment.asr_norm]
     if len(sub) < 2 or not len(sub) < len(asr) <= len(sub) + 3:
         return False
     position = 0
@@ -77,20 +78,20 @@ def _spoken_before(segments: list[AsrSegment], first_word_id: Optional[str], lim
     return "".join(word.text for word in flat[max(0, index - limit) : index])
 
 
-def _segment_stats(
+def _segment_logprob(
     alignment: CueAlignment,
     segments: dict[str, AsrSegment],
     start: int,
     end: int,
-) -> tuple[float, float]:
+) -> float:
     ids = {word_id for word_id in alignment.asr_word_ids[start:end] if word_id is not None}
     words = [word for word in alignment.words if word.id in ids]
     if not words:
         words = alignment.words
     selected = [segments[word.segment_id] for word in words if word.segment_id in segments]
     if not selected:
-        return 0.0, 0.0
-    return min(segment.avg_logprob for segment in selected), max(segment.no_speech_prob for segment in selected)
+        return 0.0
+    return min(segment.avg_logprob for segment in selected)
 
 
 def _words_evidence(alignment: CueAlignment, start: int, end: int) -> list[dict]:
@@ -131,10 +132,17 @@ def build_findings(
     findings: list[Finding] = []
     counter = 0
     cue_index = {cue.id: index for index, cue in enumerate(cues)}
+    t2s = bool(options.get("t2s", True))
+    corpus, _ = normalize(" ".join(cue.text for cue in cues), t2s)
+
+    def corpus_count(text: str) -> int:
+        term, _ = normalize(text, t2s)
+        return corpus.count(term) if term else 0
 
     for alignment in bundle.alignments:
         content_edits = []
         content_spans = []
+        term_edits = []
         typo_found = False
         non_equal = [opcode for opcode in alignment.opcodes if opcode[0] != "equal"]
         if non_equal and _additive_asr_noise(alignment):
@@ -200,7 +208,18 @@ def build_findings(
                 if head and before.endswith(head):
                     continue
             confidence = _confidence(alignment, j1, j2)
-            avg_logprob, no_speech = _segment_stats(alignment, segment_map, j1, j2)
+            avg_logprob = _segment_logprob(alignment, segment_map, j1, j2)
+
+            mixed_script = (
+                not (_has_cjk(edit.sub_text) and _has_cjk(edit.asr_text))
+                if tag == "replace"
+                else not _has_cjk(edit.sub_text) and not _has_cjk(edit.asr_text)
+            )
+            if tag != "equal" and _has_cjk(alignment.sub_text) and mixed_script:
+                # Latin/digit ↔ CJK disagreements are ASR term misreads (CAN-L → CAN D),
+                # not something a subtitle proofreader can act on.
+                term_edits.append(edit)
+                continue
 
             if tag == "replace" and _has_cjk(edit.sub_text) and _has_cjk(edit.asr_text):
                 if abs(_cjk_len(edit.sub_text) - _cjk_len(edit.asr_text)) <= 1:
@@ -209,14 +228,56 @@ def build_findings(
                     )
                     pinyin_ok = score >= pinyin_threshold
                     confidence_ok = confidence is not None and confidence >= threshold
-                    segment_ok = avg_logprob >= -1.0 and no_speech <= 0.50
+                    segment_ok = avg_logprob >= -1.0
+                    sub_freq = corpus_count(edit.sub_text)
+                    asr_freq = corpus_count(edit.asr_text)
+                    if (
+                        pinyin_ok
+                        and alignment_ok
+                        and confidence_ok
+                        and segment_ok
+                        and sub_freq >= 2
+                        and sub_freq > asr_freq
+                    ):
+                        # The subtitle uses this spelling consistently; the one-off ASR
+                        # variant is far more likely to be a mishearing.
+                        counter += 1
+                        evidence = _base_evidence(alignment, j1, j2)
+                        evidence.edits = [edit]
+                        evidence.pinyin = PinyinEvidence(
+                            sub=sub_reading,
+                            asr=asr_reading,
+                            similarity=round(score, 3),
+                            relation=relation,
+                        )
+                        evidence.note = "字幕全文拼写一致，疑似 ASR 误识"
+                        findings.append(
+                            Finding(
+                                id=f"uncertain-{alignment.cue_ids[0]}-{counter}",
+                                kind="uncertain",
+                                severity="info",
+                                cue_ids=alignment.cue_ids,
+                                start_ms=alignment.start_ms,
+                                end_ms=alignment.end_ms,
+                                title="同音差异（疑似 ASR 误识）",
+                                message=(
+                                    f"字幕「{edit.sub_text}」与识别「{edit.asr_text}」同音不一致；"
+                                    f"字幕全文该写法出现 {sub_freq} 次、另一写法 {asr_freq} 次，"
+                                    "更可能是识别误差，仅供参考。"
+                                ),
+                                subtitle_text=alignment.sub_text,
+                                asr_text=alignment.asr_text,
+                                confidence=confidence,
+                                evidence=evidence,
+                            )
+                        )
+                        continue
                     if pinyin_ok and alignment_ok and confidence_ok and segment_ok:
                         counter += 1
-                        severity = (
-                            "high"
-                            if relation == "homophone" and (confidence or 0) >= 0.97
-                            else "review"
+                        corroborated = asr_freq > sub_freq or (
+                            relation == "homophone" and (confidence or 0) >= 0.97
                         )
+                        severity = "high" if corroborated else "review"
                         evidence = _base_evidence(alignment, j1, j2)
                         evidence.edits = [edit]
                         evidence.pinyin = PinyinEvidence(
@@ -323,14 +384,19 @@ def build_findings(
 
         if content_edits:
             counter += 1
-            severity = "high" if total_chars >= 8 or not alignment_ok else "review"
+            confidence = _confidence(alignment, 0, len(alignment.asr_word_ids))
+            if not alignment_ok or (confidence is not None and confidence < uncertain_threshold):
+                # A low-confidence ASR reading cannot assert a subtitle error.
+                severity = "info"
+            else:
+                severity = "high" if total_chars >= 8 else "review"
             evidence = _base_evidence(alignment, 0, len(alignment.asr_word_ids))
             evidence.edits = content_edits
             findings.append(
                 Finding(
                     id=f"content-{alignment.cue_ids[0]}-{counter}",
                     kind="content",
-                    severity=severity if alignment_ok else "info",
+                    severity=severity,
                     cue_ids=alignment.cue_ids,
                     start_ms=alignment.start_ms,
                     end_ms=alignment.end_ms,
@@ -338,7 +404,7 @@ def build_findings(
                     message="字幕文本与识别文本存在无法用同音字解释的差异，请核对。",
                     subtitle_text=alignment.sub_text,
                     asr_text=alignment.asr_text,
-                    confidence=_confidence(alignment, 0, len(alignment.asr_word_ids)),
+                    confidence=confidence,
                     evidence=evidence,
                 )
             )
@@ -360,8 +426,35 @@ def build_findings(
                 )
             )
 
+        if term_edits:
+            counter += 1
+            evidence = _base_evidence(alignment, 0, len(alignment.asr_word_ids))
+            evidence.edits = term_edits
+            evidence.note = "中英文/数字写法差异"
+            findings.append(
+                Finding(
+                    id=f"uncertain-{alignment.cue_ids[0]}-{counter}",
+                    kind="uncertain",
+                    severity="info",
+                    cue_ids=alignment.cue_ids,
+                    start_ms=alignment.start_ms,
+                    end_ms=alignment.end_ms,
+                    title="术语识别差异",
+                    message=(
+                        "字幕与语音识别在字母、数字与汉字的写法上不一致，"
+                        "通常为 ASR 对术语的误识；请对照画面确认。"
+                    ),
+                    subtitle_text=alignment.sub_text,
+                    asr_text=alignment.asr_text,
+                    confidence=_confidence(alignment, 0, len(alignment.asr_word_ids)),
+                    evidence=evidence,
+                )
+            )
+
     for segment in segments:
-        if segment.avg_logprob >= -1.0 and segment.no_speech_prob <= 0.6:
+        # no_speech_prob is shared by a whole 30s window; Whisper itself only trusts it
+        # together with a low avg_logprob, so avg_logprob alone marks a weak decode.
+        if segment.avg_logprob >= -1.0:
             continue
         overlapping = [
             cue for cue in cues if cue.start_ms < segment.end_ms and cue.end_ms > segment.start_ms
@@ -379,8 +472,7 @@ def build_findings(
                 end_ms=segment.end_ms,
                 title="ASR 置信度较低",
                 message=(
-                    f"该语音段平均对数概率 {segment.avg_logprob:.2f}，"
-                    f"无语音概率 {segment.no_speech_prob:.2f}，结论仅供参考。"
+                    f"该语音段平均对数概率 {segment.avg_logprob:.2f}，识别质量偏低，结论仅供参考。"
                 ),
                 subtitle_text=" ".join(cue.text for cue in overlapping),
                 asr_text=segment.text,

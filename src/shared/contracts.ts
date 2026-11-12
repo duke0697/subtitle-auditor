@@ -127,6 +127,7 @@ export interface AnalysisOptions {
   timingToleranceMs: number
   globalOffsetMs: number
   t2s: boolean
+  ocrSource?: boolean
 }
 
 export interface ModelInfo {

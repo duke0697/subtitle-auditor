@@ -17,9 +17,7 @@ MIN_LINE_RATIO = 0.08
 CHANGE_THRESHOLD = 6.0
 FORCE_INTERVAL_S = 2.0
 SAMPLE_INTERVAL_S = 0.25
-
-_engine = None
-_engine_lock = threading.Lock()
+CENTER_TOLERANCE = 0.25
 
 
 @dataclass
@@ -28,6 +26,18 @@ class OcrCue:
     end_s: float
     text: str
     score: float
+
+
+def _is_cjk(text: str) -> bool:
+    return any("一" <= char <= "鿿" for char in text)
+
+
+def _is_text(text: str) -> bool:
+    return _is_cjk(text) or (len(text) >= 4 and any(char.isalnum() for char in text))
+
+
+_engine = None
+_engine_lock = threading.Lock()
 
 
 def _get_engine():
@@ -70,7 +80,6 @@ def _read_lines(band) -> list[tuple[str, float]]:
     result = _get_engine()(band)
     if result.boxes is None or len(result.boxes) == 0:
         return []
-
     width = band.shape[1]
     boxes = []
     for box, text, score in zip(result.boxes, result.txts or [], result.scores or []):
@@ -90,12 +99,29 @@ def _read_lines(band) -> list[tuple[str, float]]:
                 "score": score,
             }
         )
+    return _select_lines(boxes, width, band.shape[0])
+
+
+def _select_lines(boxes: list[dict], width: int, height: int) -> list[tuple[str, float]]:
+    """Keep only the centered subtitle band; screen labels and clipped UI art are dropped."""
+    boxes = [
+        item
+        for item in boxes
+        if item["top"] >= 1
+        and item["bottom"] <= height - 1
+        and item["bottom"] - item["top"] <= height * 0.8
+        and item["right"] - item["left"] >= width * MIN_LINE_RATIO
+    ]
     if not boxes:
         return []
-
     boxes.sort(key=lambda item: item["bottom"])
     anchor = next(
-        (item for item in reversed(boxes) if item["right"] - item["left"] >= width * MIN_LINE_RATIO),
+        (
+            item
+            for item in reversed(boxes)
+            if abs((item["left"] + item["right"]) / 2 / width - 0.5) <= CENTER_TOLERANCE
+            and _is_text(item["text"])
+        ),
         None,
     )
     if anchor is None:
@@ -106,31 +132,64 @@ def _read_lines(band) -> list[tuple[str, float]]:
         item
         for item in boxes
         if item["bottom"] >= anchor["top"] - line_height * 1.2
-        and item["right"] > anchor["left"] - (anchor["right"] - anchor["left"]) * 0.2
-        and item["left"] < anchor["right"] + (anchor["right"] - anchor["left"]) * 0.2
+        and max(item["left"] - anchor["right"], anchor["left"] - item["right"], 0) <= line_height
+        and _is_text(item["text"])
     ]
-    kept.sort(key=lambda item: item["top"])
+    kept.sort(key=lambda item: (item["left"], item["top"]))
     return [(item["text"], item["score"]) for item in kept]
 
 
 def merge_samples(samples: list[tuple[float, str, float]]) -> list[OcrCue]:
-    """Merge per-sample OCR results into cues, extending each cue to the next change."""
+    """Merge per-sample OCR results into cues; a text change only splits once the next sample confirms it."""
     cues: list[OcrCue] = []
     current: Optional[OcrCue] = None
+    pending: Optional[OcrCue] = None
+    last_time = samples[-1][0] if samples else 0.0
     for timestamp, text, score in samples:
-        if current and text and text == current.text:
+        if current is None:
+            if text:
+                current = OcrCue(start_s=timestamp, end_s=timestamp, text=text, score=score)
+            continue
+        if text == current.text:
             current.end_s = timestamp
             current.score = max(current.score, score)
+            pending = None
             continue
-        if current:
-            current.end_s = timestamp
-            cues.append(current)
+        if not text:
+            if pending is not None:
+                current.end_s = pending.start_s
+                cues.append(current)
+                pending.end_s = timestamp
+                cues.append(pending)
+                pending = None
+            else:
+                current.end_s = timestamp
+                cues.append(current)
             current = None
-        if text:
-            current = OcrCue(start_s=timestamp, end_s=timestamp, text=text, score=score)
-    if current:
-        last = samples[-1][0] if samples else current.start_s
-        current.end_s = max(current.end_s, last)
+            continue
+        if pending is not None and text == pending.text:
+            current.end_s = pending.start_s
+            cues.append(current)
+            current = OcrCue(
+                start_s=pending.start_s, end_s=timestamp, text=text, score=max(pending.score, score)
+            )
+            pending = None
+            continue
+        if pending is None:
+            pending = OcrCue(start_s=timestamp, end_s=timestamp, text=text, score=score)
+            continue
+        # A third distinct text: the previous pending sample was a real change after all.
+        current.end_s = pending.start_s
+        cues.append(current)
+        current = pending
+        pending = OcrCue(start_s=timestamp, end_s=timestamp, text=text, score=score)
+
+    if pending is not None and current is not None:
+        current.end_s = pending.start_s
+        cues.append(current)
+        current = pending
+    if current is not None:
+        current.end_s = max(current.end_s, last_time)
         cues.append(current)
 
     for cue in cues:

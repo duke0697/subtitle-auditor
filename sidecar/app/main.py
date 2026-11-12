@@ -43,6 +43,7 @@ def _run_analysis(server: RpcServer, job_id: str, params: dict, cancel: threadin
         options = {**DEFAULT_OPTIONS, **(params.get("options") or {})}
         video_path = params["videoPath"]
         subtitle_path = params["subtitlePath"]
+        options["ocrSource"] = str(subtitle_path).lower().endswith(".ocr.srt")
         _progress(server, job_id, "probe", 0.02, "读取媒体信息")
         info = media.probe(video_path)
         duration = int(info.get("durationMs", 0))

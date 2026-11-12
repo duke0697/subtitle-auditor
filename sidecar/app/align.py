@@ -279,60 +279,53 @@ def _evaluate(
 ) -> tuple[float, float, list[int]]:
     start = cues[0].start_ms - offset
     end = cues[-1].end_ms - offset
-    candidates: list[int] = []
+    sub_norm, _ = normalize(" ".join(cue.text for cue in cues), t2s)
+    duration = max(1, end - start)
+    best: Optional[tuple[float, float, float, list[int]]] = None
+
     for tolerance in tolerances:
         candidates = _candidate_indices(words, start, end, tolerance, minimum)
-        if candidates:
-            break
-    if not candidates:
-        return 0.0, 0.0, []
-
-    sub_norm, _ = normalize(" ".join(cue.text for cue in cues), t2s)
-    if not sub_norm:
-        return 0.0, 0.0, candidates
-
-    duration = max(1, end - start)
-    best_score = -1.0
-    best_ratio = 0.0
-    best_overlap = 0.0
-    best_run: list[int] = []
-    norm_cache = {index: normalize(words[index].text, t2s)[0] for index in candidates}
-
-    if len(candidates) > 36:
-        runs = [candidates]
-    else:
-        runs = [
-            candidates[first : first + length]
-            for first in range(len(candidates))
-            for length in range(1, len(candidates) - first + 1)
-        ]
-
-    for run in runs:
-        asr_norm = "".join(norm_cache[index] for index in run)
-        if not asr_norm:
+        if not candidates:
             continue
-        ratio = fuzz.ratio(sub_norm, asr_norm)
-        # fuzz.ratio rewards dropping mismatching words; score against the longer text instead.
-        matches = ratio * (len(sub_norm) + len(asr_norm)) / 200.0
-        ratio = 100.0 * matches / max(len(sub_norm), len(asr_norm))
-        asr_start = min(words[index].start_ms for index in run)
-        asr_end = max(words[index].end_ms for index in run)
-        overlap = max(0, min(end, asr_end) - max(start, asr_start)) / duration
-        outside = sum(
-            1
-            for index in run
-            if words[index].end_ms < start or words[index].start_ms > end
-        )
-        score = 0.85 * ratio + 15 * overlap - 8 * outside + 0.05 * len(asr_norm)
-        if score > best_score:
-            best_score = score
-            best_ratio = ratio
-            best_overlap = overlap
-            best_run = run
+        norm_cache = {index: normalize(words[index].text, t2s)[0] for index in candidates}
+        if len(candidates) > 36:
+            runs = [candidates]
+        else:
+            runs = [
+                candidates[first : first + length]
+                for first in range(len(candidates))
+                for length in range(1, len(candidates) - first + 1)
+            ]
+        for run in runs:
+            asr_norm = "".join(norm_cache[index] for index in run)
+            if not asr_norm:
+                continue
+            ratio = fuzz.ratio(sub_norm, asr_norm)
+            # fuzz.ratio rewards dropping mismatching words; score against the longer text instead.
+            matches = ratio * (len(sub_norm) + len(asr_norm)) / 200.0
+            ratio = 100.0 * matches / max(len(sub_norm), len(asr_norm))
+            asr_start = min(words[index].start_ms for index in run)
+            asr_end = max(words[index].end_ms for index in run)
+            overlap = max(0, min(end, asr_end) - max(start, asr_start)) / duration
+            outside = sum(
+                1
+                for index in run
+                if words[index].end_ms < start or words[index].start_ms > end
+            )
+            score = 0.85 * ratio + 15 * overlap - 8 * outside + 0.05 * len(asr_norm)
+            if best is None or score > best[0]:
+                best = (score, ratio, overlap, run)
+        # A narrow window that already explains the subtitle well is not widened.
+        if best is not None and best[1] >= 88:
+            break
 
-    if best_ratio < 25 and best_overlap < 0.3:
+    if best is None or not sub_norm:
+        candidates = _candidate_indices(words, start, end, tolerances[0], minimum)
+        return 0.0, 0.0, candidates
+    _, ratio, overlap, run = best
+    if ratio < 25 and overlap < 0.3:
         return 0.0, 0.0, []
-    return best_ratio, best_overlap, best_run
+    return ratio, overlap, run
 
 
 def _build_alignment(
@@ -512,7 +505,9 @@ def align(
         alignments.append(
             _build_alignment(group, words, indices, ratio, t2s, merged=size > 1)
         )
-        minimum = bisect.bisect_left(starts, group[-1].end_ms)
+        # The cursor must live in ASR time, otherwise a global offset makes every cue
+        # eat the words that belong to the next one.
+        minimum = bisect.bisect_left(starts, group[-1].end_ms - effective_offset)
         index += size
 
     return AlignmentBundle(

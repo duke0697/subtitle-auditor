@@ -200,3 +200,39 @@ def test_keeps_numeral_matching_subtitle_digit():
     alignment = bundle.alignments[0]
     assert alignment.asr_text == "四个系统异常"
     assert alignment.edits == []
+
+
+def test_narrow_window_truncation_is_recovered():
+    cue = make_cue(0, 9500, "首先打开点火开关", 1750)
+    timeline = [
+        ("首先", 10860, 11560),
+        ("打", 11560, 11880),
+        ("开", 11880, 12000),
+        ("点", 12000, 12200),
+        ("火", 12200, 12340),
+        ("开", 12340, 12560),
+        ("关", 12560, 13340),
+    ]
+    segment = AsrSegment(
+        id="seg-0",
+        start_ms=10860,
+        end_ms=13340,
+        text="首先打开点火开关",
+        avg_logprob=-0.07,
+        no_speech_prob=0.61,
+        words=[
+            AsrWord(
+                id=f"w-0-{index}",
+                text=text,
+                start_ms=start,
+                end_ms=end,
+                probability=0.99,
+                segment_id="seg-0",
+            )
+            for index, (text, start, end) in enumerate(timeline)
+        ],
+    )
+    bundle = align([cue], [segment], DEFAULT_OPTIONS)
+    alignment = bundle.alignments[0]
+    assert alignment.asr_text == "首先打开点火开关"
+    assert alignment.edits == []

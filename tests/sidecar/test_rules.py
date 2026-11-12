@@ -8,7 +8,9 @@ def cue(index: int, start: int, text: str, duration: int = 2000) -> Cue:
     return Cue(id=f"cue-{index}", index=index, start_ms=start, end_ms=start + duration, text=text)
 
 
-def segment(index: int, text: str, probability: float = 0.98, avg: float = -0.1) -> AsrSegment:
+def segment(
+    index: int, text: str, probability: float = 0.98, avg: float = -0.1, no_speech: float = 0.05
+) -> AsrSegment:
     word = AsrWord(
         id=f"w-{index}-0",
         text=text,
@@ -23,7 +25,7 @@ def segment(index: int, text: str, probability: float = 0.98, avg: float = -0.1)
         end_ms=2000,
         text=text,
         avg_logprob=avg,
-        no_speech_prob=0.05,
+        no_speech_prob=no_speech,
         words=[word],
     )
 
@@ -48,9 +50,15 @@ def segment_span(index: int, text: str, start: int, end: int) -> AsrSegment:
     )
 
 
-def analyze(cue_text: str, asr_text: str, probability: float = 0.98, avg: float = -0.1):
+def analyze(
+    cue_text: str,
+    asr_text: str,
+    probability: float = 0.98,
+    avg: float = -0.1,
+    no_speech: float = 0.05,
+):
     cues = [cue(0, 0, cue_text)]
-    segments = [segment(0, asr_text, probability, avg)]
+    segments = [segment(0, asr_text, probability, avg, no_speech)]
     bundle = align(cues, segments, DEFAULT_OPTIONS)
     findings = build_findings(cues, segments, bundle, DEFAULT_OPTIONS)
     summary = build_summary(cues, segments, bundle, findings, 2000)
@@ -126,3 +134,51 @@ def test_summary_counts():
     assert summary.counts["typo"] == len([item for item in findings if item.kind == "typo"])
     assert 0.0 <= summary.consistency <= 1.0
     assert summary.cue_count == 1
+
+
+def test_window_no_speech_alone_is_not_low_confidence():
+    # no_speech_prob belongs to a whole 30s window; a clean decode must not be flagged.
+    findings, _ = analyze("首先打开点火开关", "首先打开点火开关", avg=-0.07, no_speech=0.61)
+    assert not [item for item in findings if item.title == "ASR 置信度较低"]
+
+
+def test_low_logprob_is_still_flagged():
+    findings, _ = analyze("检查实训环境", "检查实训环境", avg=-1.4, no_speech=0.2)
+    assert [item for item in findings if item.title == "ASR 置信度较低"]
+
+
+def test_mixed_script_difference_is_term_mismatch_not_content():
+    findings, _ = analyze("高压互锁输出HVIL-out端子", "高压互锁输出或VLDout端子")
+    assert not [item for item in findings if item.kind == "content"]
+    assert [item for item in findings if item.title == "术语识别差异"]
+
+
+def test_consistent_subtitle_spelling_demotes_typo():
+    cues = [
+        cue(0, 0, "将接地夹连接至负极"),
+        cue(1, 3000, "另一接地夹连接至正极"),
+        cue(2, 6000, "测量接地夹电压"),
+    ]
+    segments = [
+        segment_span(0, "将接地加连接至负极", 0, 2000),
+        segment_span(1, "另一接地夹连接至正极", 3000, 5000),
+        segment_span(2, "测量接地夹电压", 6000, 8000),
+    ]
+    bundle = align(cues, segments, DEFAULT_OPTIONS)
+    findings = build_findings(cues, segments, bundle, DEFAULT_OPTIONS)
+    assert not [item for item in findings if item.kind == "typo"]
+    assert [item for item in findings if item.title == "同音差异（疑似 ASR 误识）"]
+
+
+def test_unique_subtitle_spelling_is_high_typo():
+    cues = [cue(0, 0, "今天天气很号我们出去走走吧"), cue(1, 3000, "好呀我想去公园看看")]
+    segments = [
+        segment_span(0, "今天天气很好我们出去走走吧", 0, 2000),
+        segment_span(1, "好呀我想去公园看看", 3000, 5000),
+    ]
+    bundle = align(cues, segments, DEFAULT_OPTIONS)
+    findings = build_findings(cues, segments, bundle, DEFAULT_OPTIONS)
+    typos = [item for item in findings if item.kind == "typo"]
+    assert len(typos) == 1
+    assert typos[0].severity == "high"
+    assert typos[0].suggestion == "好"

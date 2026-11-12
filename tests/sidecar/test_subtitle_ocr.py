@@ -1,4 +1,46 @@
-from app.subtitle_ocr import merge_samples
+from app.subtitle_ocr import _select_lines, merge_samples
+
+
+def box(text, left, right, top, bottom, score=0.9):
+    return {"text": text, "score": score, "left": left, "right": right, "top": top, "bottom": bottom}
+
+
+def test_ui_boxes_touching_band_edges_are_dropped():
+    assert _select_lines([box("VY", 416, 640, 0, 48)], 640, 48) == []
+
+
+def test_right_side_label_is_dropped():
+    boxes = [box("概压", 627, 640, 15, 27, 0.63), box("选择重置", 275, 365, 6, 34)]
+    assert _select_lines(boxes, 640, 48) == [("选择重置", 0.9)]
+
+
+def test_left_camera_label_is_dropped():
+    boxes = [box("转向伺服电机", 6, 141, 16, 39), box("将第2组CAN通讯线束一端的蓝色线", 192, 448, 17, 37)]
+    assert [text for text, _ in _select_lines(boxes, 640, 48)] == ["将第2组CAN通讯线束一端的蓝色线"]
+
+
+def test_two_line_staircase_subtitle_keeps_both_lines_in_reading_order():
+    boxes = [box("一端的蓝色线", 352, 448, 16, 36), box("将这组CAN通讯线束另一", 192, 365, 17, 37)]
+    assert [text for text, _ in _select_lines(boxes, 640, 48)] == [
+        "将这组CAN通讯线束另一",
+        "一端的蓝色线",
+    ]
+
+
+def test_change_is_ignored_until_the_next_sample_confirms_it():
+    samples = [(0.0, "第一行\n第二行", 0.9), (0.5, "第一行", 0.8), (1.0, "第一行\n第二行", 0.9), (2.0, "", 0.0)]
+    cues = merge_samples(samples)
+    assert len(cues) == 1
+    assert cues[0].text == "第一行\n第二行"
+    assert cues[0].end_s == 2.0
+
+
+def test_confirmed_change_still_splits():
+    samples = [(0.0, "第一句", 0.9), (0.5, "第二句", 0.9), (1.0, "第二句", 0.9), (2.0, "", 0.0)]
+    cues = merge_samples(samples)
+    assert [cue.text for cue in cues] == ["第一句", "第二句"]
+    assert cues[0].end_s == 0.5
+    assert cues[1].start_s == 0.5
 
 
 def test_repeated_text_extends_cue():
