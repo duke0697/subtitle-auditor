@@ -17,6 +17,10 @@ tests/output/
 tests/fixtures/*.err
 *.tsbuildinfo
 .ccg/
+# .context 决策上下文仅保留本地
+.context/
+# AI 工具本地索引
+.claude/
 /*.mp4
 /*.srt
 scripts/tmp_*.py
