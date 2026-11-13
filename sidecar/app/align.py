@@ -39,6 +39,7 @@ class CueAlignment:
     last_word_end_ms: Optional[int] = None
     words: list[AsrWord] = field(default_factory=list)
     merged: bool = False
+    cue_offsets: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -126,8 +127,13 @@ _CN_UNIT_WORDS = (
 _CN_UNIT_PATTERN = re.compile(rf"(?<!\d)({_CN_NUM_LAZY})({_CN_UNIT_WORDS})")
 _CN_UNIT_ALIASES = {"千米": "公里", "平方毫米": "平方"}
 _PERCENT_CN_PATTERN = re.compile(rf"百分之({_CN_NUM})")
-_CAN_DIFF = re.compile(r"(?i)can[-_\s]?([hl])(?![a-z])")
+_CAN_DIFF = re.compile(r"(?i)can[-_\s、，,·]*([hl])(?![a-z])")
+_CAN_SPLIT = re.compile(r"(?i)(can[-_\s]?[hl])(?=can[-_\s]?[hl])")
 _CAN_WORDS = {"h": "高", "l": "低"}
+# Terminal signs are spoken as 正/负; a hyphen between ASCII letters (T-Box, Wi-Fi) or
+# between digits (4-7) is not a sign.
+_SIGN_PLUS = re.compile(r"(?<=[A-Za-z0-9])\+(?![A-Za-z0-9])")
+_SIGN_MINUS = re.compile(r"(?<=[A-Za-z0-9])-(?![A-Za-z0-9])")
 _DECIMAL_DOT = re.compile(r"(?<=\d)\.(?=\d)")
 _NUMBER_RANGE = re.compile(r"(?<=\d)\s*[-~～至]\s*(?=\d)")
 
@@ -200,11 +206,19 @@ def normalize(text: str, t2s: bool = True) -> tuple[str, list[int]]:
         if len(candidate) == len(text):
             converted = candidate
     converted = converted.translate(_FULLWIDTH)
+    # OCR sometimes glues two codes together (CAN-HCAN-L); the boundary lookahead in
+    # _CAN_DIFF would otherwise skip the first one because a letter follows the H.
+    converted, split_source = _rewrite(converted, _CAN_SPLIT, lambda match: f"{match.group(1)} ")
     converted, can_source = _rewrite(
         converted, _CAN_DIFF, lambda match: f"CAN{_CAN_WORDS[match.group(1).lower()]}"
     )
+    converted, plus_source = _rewrite(converted, _SIGN_PLUS, lambda match: "正")
+    converted, minus_source = _rewrite(converted, _SIGN_MINUS, lambda match: "负")
     canonical, source = _canonical(converted)
+    source = [minus_source[index] for index in source]
+    source = [plus_source[index] for index in source]
     source = [can_source[index] for index in source]
+    source = [split_source[index] for index in source]
     output: list[str] = []
     mapping: list[int] = []
     for index, char in enumerate(canonical):
@@ -328,6 +342,18 @@ def _evaluate(
     return ratio, overlap, run
 
 
+def _cue_offsets(cues: list[Cue], sub_map: list[int]) -> list[int]:
+    """Normalized start offset of each cue inside the joined subtitle text."""
+    offsets: list[int] = []
+    original = 0
+    for index, cue in enumerate(cues):
+        if index:
+            original += 1
+        offsets.append(bisect.bisect_left(sub_map, original))
+        original += len(cue.text)
+    return offsets
+
+
 def _build_alignment(
     cues: list[Cue],
     words: list[AsrWord],
@@ -391,6 +417,7 @@ def _build_alignment(
         last_word_end_ms=last_end,
         words=selected,
         merged=merged,
+        cue_offsets=_cue_offsets(cues, sub_map),
     )
 
 

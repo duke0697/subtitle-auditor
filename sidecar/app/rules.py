@@ -67,6 +67,76 @@ def _edge_only(alignment: CueAlignment, spans: list[tuple[str, int, int, int, in
     return True
 
 
+def _cue_boundary_only(alignment: CueAlignment, spans: list[tuple[str, int, int, int, int]]) -> bool:
+    """True when every difference is a delete at a wrap between two cues."""
+    boundaries = {
+        offset for offset in alignment.cue_offsets[1:] if 0 < offset < len(alignment.sub_norm)
+    }
+    if not boundaries:
+        return False
+    for tag, i1, i2, _, _ in spans:
+        if tag != "delete" or not (i1 in boundaries or i2 in boundaries):
+            return False
+    return True
+
+
+def _ascii_token(text: str, start: int, end: int) -> str:
+    """Extend a raw edit to its alphanumeric token (CAN-L, not just the mapped C)."""
+    options = "-_."
+    left, right = start, end
+    while left > 0 and text[left - 1].isascii() and (text[left - 1].isalnum() or text[left - 1] in options):
+        left -= 1
+    while right < len(text) and text[right].isascii() and (text[right].isalnum() or text[right] in options):
+        right += 1
+    return text[left:right]
+
+
+def _clusters(spans: list[tuple[str, int, int, int, int]]) -> list[list[tuple[str, int, int, int, int]]]:
+    """Group diff spans that sit close together; a garbled acronym splits into several spans."""
+    clusters: list[list[tuple[str, int, int, int, int]]] = []
+    for span in spans:
+        if (
+            clusters
+            and span[1] - clusters[-1][-1][2] <= 2
+            and span[3] - clusters[-1][-1][4] <= 2
+        ):
+            clusters[-1].append(span)
+        else:
+            clusters.append([span])
+    return clusters
+
+
+def _raw_key(text: str) -> str:
+    return "".join(char.lower() for char in text if char.isalnum() or "一" <= char <= "鿿")
+
+
+def _boundary_repeat(edit_text: str, cue_text: str, suffix: bool) -> bool:
+    """Catch boundary repeats that normalization splits (CAN-L 端子 vs L 端子)."""
+    edit, cue = _raw_key(edit_text), _raw_key(cue_text)
+    if not edit or not cue:
+        return False
+    return cue.endswith(edit) if suffix else cue.startswith(edit)
+
+
+def _phrase_pairs(
+    alignment: CueAlignment, i1: int, i2: int, j1: int, j2: int, corpus: str
+) -> list[tuple[int, int, str, str]]:
+    """Count the differing phrase plus one neighbour on both sides of the corpus.
+
+    Single-character counts are too coarse: 「插」 also occurs in 「插头」, which used to
+    corroborate an ASR misread of 「差分」. The phrase keeps the comparison specific.
+    """
+    sub, asr = alignment.sub_norm, alignment.asr_norm
+    pairs: list[tuple[int, int, str, str]] = []
+    for suffix in (False, True):
+        sub_phrase = sub[i1 : min(len(sub), i2 + 1)] if not suffix else sub[max(0, i1 - 1) : i2]
+        asr_phrase = asr[j1 : min(len(asr), j2 + 1)] if not suffix else asr[max(0, j1 - 1) : j2]
+        if not sub_phrase or not asr_phrase:
+            continue
+        pairs.append((corpus.count(sub_phrase), corpus.count(asr_phrase), sub_phrase, asr_phrase))
+    return pairs
+
+
 def _spoken_before(segments: list[AsrSegment], first_word_id: Optional[str], limit: int = 6) -> str:
     """Text of the words right before the aligned run (used to explain truncation)."""
     if not first_word_id:
@@ -117,6 +187,57 @@ def _confidence_label(value: Optional[float]) -> str:
     return "未知" if value is None else f"{value:.2f}"
 
 
+def _glossary_supports(alignment: CueAlignment, i1: int, i2: int, j1: int, j2: int, terms: list[str]) -> bool:
+    """True when the speech matches a glossary term the subtitle spells differently.
+
+    Only a full term (length >= 3) overlapping the edit counts: shorter generic words
+    such as 急停 would otherwise corroborate unrelated homophones.
+    """
+    asr, sub = alignment.asr_norm, alignment.sub_norm
+    for term in terms:
+        start = asr.find(term)
+        while start != -1:
+            end = start + len(term)
+            if start <= j1 and j2 <= end:
+                offset = j1 - start
+                sub_span = sub[i1 - offset : i1 - offset + len(term)]
+                tail = offset + (j2 - j1)
+                if (
+                    len(sub_span) == len(term)
+                    and sub_span != term
+                    and sub_span[:offset] == term[:offset]
+                    and sub_span[tail:] == term[tail:]
+                ):
+                    return True
+            start = asr.find(term, start + 1)
+    return False
+
+
+def _merge_repeats(findings: list[Finding]) -> list[Finding]:
+    """Fold identical edits inside one aligned group into a single finding."""
+    merged: dict[tuple, Finding] = {}
+    output: list[Finding] = []
+    for finding in findings:
+        edits = finding.evidence.edits
+        if not edits:
+            output.append(finding)
+            continue
+        key = (
+            finding.kind,
+            finding.title,
+            tuple(finding.cue_ids),
+            tuple((edit.sub_text, edit.asr_text) for edit in edits),
+        )
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = finding
+            output.append(finding)
+            continue
+        existing.evidence.edits.extend(edits)
+        existing.evidence.note = f"同一差异在本组字幕出现 {len(existing.evidence.edits)} 次"
+    return output
+
+
 def build_findings(
     cues: list[Cue],
     segments: list[AsrSegment],
@@ -134,17 +255,21 @@ def build_findings(
     cue_index = {cue.id: index for index, cue in enumerate(cues)}
     t2s = bool(options.get("t2s", True))
     corpus, _ = normalize(" ".join(cue.text for cue in cues), t2s)
-
-    def corpus_count(text: str) -> int:
-        term, _ = normalize(text, t2s)
-        return corpus.count(term) if term else 0
+    glossary_terms = [
+        key
+        for term in (options.get("glossary") or [])
+        if len(key := normalize(str(term), t2s)[0]) >= 3
+    ]
 
     for alignment in bundle.alignments:
         content_edits = []
         content_spans = []
         term_edits = []
-        typo_found = False
+        letter_edits = []
         non_equal = [opcode for opcode in alignment.opcodes if opcode[0] != "equal"]
+        cluster_size: list[int] = []
+        for group in _clusters(non_equal):
+            cluster_size.extend([len(group)] * len(group))
         if non_equal and _additive_asr_noise(alignment):
             counter += 1
             evidence = _base_evidence(alignment, 0, len(alignment.asr_word_ids))
@@ -159,7 +284,7 @@ def build_findings(
                     start_ms=alignment.start_ms,
                     end_ms=alignment.end_ms,
                     title="语音多识别",
-                    message="语音识别结果比字幕多出少量字词，可能是识别插入；字幕内容未被否定，仅供参考。",
+                    message="语音识别结果比字幕多出少量字词，可能是识别插入，也可能是字幕漏录；字幕内容未被否定，仅供参考。",
                     subtitle_text=alignment.sub_text,
                     asr_text=alignment.asr_text,
                     evidence=evidence,
@@ -185,7 +310,7 @@ def build_findings(
         last_cue = cue_index.get(alignment.cue_ids[-1])
         previous_cue = cues[first_cue - 1] if first_cue else None
         next_cue = cues[last_cue + 1] if last_cue is not None and last_cue + 1 < len(cues) else None
-        for edit, (tag, i1, i2, j1, j2) in zip(alignment.edits, non_equal):
+        for edit_index, (edit, (tag, i1, i2, j1, j2)) in enumerate(zip(alignment.edits, non_equal)):
             if tag == "delete" and (
                 (i1 == 0 and lagging_start) or (i2 >= len(alignment.sub_norm) and lagging_end)
             ):
@@ -202,10 +327,14 @@ def build_findings(
                 upcoming, _ = normalize(next_cue.text)
                 if tail and upcoming.startswith(tail):
                     continue
+                if _boundary_repeat(edit.asr_text, next_cue.text, suffix=False):
+                    continue
             if tag == "insert" and j1 == 0 and previous_cue is not None:
                 head, _ = normalize(edit.asr_text)
                 before, _ = normalize(previous_cue.text)
                 if head and before.endswith(head):
+                    continue
+                if _boundary_repeat(edit.asr_text, previous_cue.text, suffix=True):
                     continue
             confidence = _confidence(alignment, j1, j2)
             avg_logprob = _segment_logprob(alignment, segment_map, j1, j2)
@@ -216,8 +345,26 @@ def build_findings(
                 else not _has_cjk(edit.sub_text) and not _has_cjk(edit.asr_text)
             )
             if tag != "equal" and _has_cjk(alignment.sub_text) and mixed_script:
-                # Latin/digit ↔ CJK disagreements are ASR term misreads (CAN-L → CAN D),
-                # not something a subtitle proofreader can act on.
+                # A clean one-token letter swap (CAN-L → CAN-D) is a content difference:
+                # the narration may really read it differently. Garbled acronyms split
+                # into several adjacent spans and stay a term-recognition note.
+                clean_swap = (
+                    tag == "replace"
+                    and cluster_size[edit_index] == 1
+                    and not _has_cjk(edit.sub_text)
+                    and not _has_cjk(edit.asr_text)
+                    and any(char.isalnum() for char in edit.sub_text)
+                    and any(char.isalnum() for char in edit.asr_text)
+                )
+                if clean_swap:
+                    letter_edits.append(
+                        (
+                            edit,
+                            _ascii_token(alignment.sub_text, edit.sub_start, edit.sub_end),
+                            _ascii_token(alignment.asr_text, edit.asr_start, edit.asr_end),
+                        )
+                    )
+                    continue
                 term_edits.append(edit)
                 continue
 
@@ -227,21 +374,23 @@ def build_findings(
                         simplify(edit.sub_text), simplify(edit.asr_text)
                     )
                     pinyin_ok = score >= pinyin_threshold
+                    exact_ok = relation in {"homophone", "tone"}
                     confidence_ok = confidence is not None and confidence >= threshold
                     segment_ok = avg_logprob >= -1.0
-                    sub_freq = corpus_count(edit.sub_text)
-                    asr_freq = corpus_count(edit.asr_text)
-                    if (
-                        pinyin_ok
-                        and alignment_ok
-                        and confidence_ok
-                        and segment_ok
-                        and sub_freq >= 2
-                        and sub_freq > asr_freq
-                    ):
-                        # The subtitle uses this spelling consistently; the one-off ASR
-                        # variant is far more likely to be a mishearing.
-                        counter += 1
+                    pairs = _phrase_pairs(alignment, i1, i2, j1, j2, corpus)
+                    consistent = next(
+                        (pair for pair in pairs if pair[0] >= 2 and pair[0] > pair[1]),
+                        None,
+                    )
+                    best_sub, best_asr = max(
+                        ((pair[0], pair[1]) for pair in pairs), default=(0, 0)
+                    )
+                    # A noisy group still proves a typo when the subtitle itself uses the
+                    # spoken spelling elsewhere: the sheet is inconsistent at this spot.
+                    corroborated = best_asr >= 2 and best_asr > best_sub
+                    reliable = alignment_ok or corroborated
+                    glossary_hit = _glossary_supports(alignment, i1, i2, j1, j2, glossary_terms)
+                    if pinyin_ok:
                         evidence = _base_evidence(alignment, j1, j2)
                         evidence.edits = [edit]
                         evidence.pinyin = PinyinEvidence(
@@ -250,7 +399,95 @@ def build_findings(
                             similarity=round(score, 3),
                             relation=relation,
                         )
-                        evidence.note = "字幕全文拼写一致，疑似 ASR 误识"
+                        if (
+                            exact_ok
+                            and reliable
+                            and confidence_ok
+                            and segment_ok
+                            and consistent
+                            and not glossary_hit
+                        ):
+                            # The subtitle uses this spelling consistently; the one-off ASR
+                            # variant is far more likely to be a mishearing.
+                            sub_count, asr_count, sub_phrase, asr_phrase = consistent
+                            counter += 1
+                            evidence.note = "字幕全文拼写一致，疑似 ASR 误识"
+                            findings.append(
+                                Finding(
+                                    id=f"uncertain-{alignment.cue_ids[0]}-{counter}",
+                                    kind="uncertain",
+                                    severity="info",
+                                    cue_ids=alignment.cue_ids,
+                                    start_ms=alignment.start_ms,
+                                    end_ms=alignment.end_ms,
+                                    title="同音差异（疑似 ASR 误识）",
+                                    message=(
+                                        f"字幕「{edit.sub_text}」与识别「{edit.asr_text}」同音不一致；"
+                                        f"字幕全文「{sub_phrase}」出现 {sub_count} 次、"
+                                        f"「{asr_phrase}」{asr_count} 次，更可能是识别误差，仅供参考。"
+                                    ),
+                                    subtitle_text=alignment.sub_text,
+                                    asr_text=alignment.asr_text,
+                                    confidence=confidence,
+                                    evidence=evidence,
+                                )
+                            )
+                            continue
+                        if exact_ok and reliable and confidence_ok and segment_ok:
+                            # Token confidence cannot corroborate a homophone: Whisper is
+                            # confident about the pronunciation, not the character. High
+                            # severity needs the subtitle itself to use the ASR spelling.
+                            severity = "high" if best_asr > best_sub or glossary_hit else "review"
+                            suggestion = (
+                                simplify(edit.asr_text)
+                                if options.get("t2s", True)
+                                else edit.asr_text
+                            )
+                            counter += 1
+                            findings.append(
+                                Finding(
+                                    id=f"typo-{alignment.cue_ids[0]}-{counter}",
+                                    kind="typo",
+                                    severity=severity,
+                                    cue_ids=alignment.cue_ids,
+                                    start_ms=alignment.start_ms,
+                                    end_ms=alignment.end_ms,
+                                    title="疑似错别字",
+                                    message=(
+                                        f"字幕「{edit.sub_text}」与语音识别「{edit.asr_text}」"
+                                        f"为{'同音' if relation == 'homophone' else '近音'}"
+                                        f"关系，词级置信度 {_confidence_label(confidence)}。请人工确认。"
+                                    ),
+                                    subtitle_text=alignment.sub_text,
+                                    asr_text=alignment.asr_text,
+                                    confidence=confidence,
+                                    suggestion=suggestion,
+                                    evidence=evidence,
+                                )
+                            )
+                            continue
+                        # A CJK homophone/near-homophone disagreement cannot be asserted as a
+                        # subtitle error without high confidence and a clean alignment.
+                        counter += 1
+                        if not exact_ok:
+                            evidence.note = "声母/韵母相近，ASR 误识可能性较高"
+                            title = "近音差异（疑似 ASR 误识）"
+                            message = (
+                                f"字幕「{edit.sub_text}」与识别「{edit.asr_text}」读音相近"
+                                f"（相似度 {score:.2f}），更可能是 ASR 混淆，仅供参考。"
+                            )
+                        else:
+                            evidence.note = "同音差异但证据不足，未判定为错别字"
+                            title = (
+                                "ASR 置信度不足"
+                                if reliable and segment_ok
+                                else "同音差异（证据不足）"
+                            )
+                            message = (
+                                f"字幕「{edit.sub_text}」与识别「{edit.asr_text}」疑似同音，"
+                                f"但词级置信度仅 {_confidence_label(confidence)}"
+                                f"{'' if reliable else '、对齐不足'}，需人工确认。"
+                            )
                         findings.append(
                             Finding(
                                 id=f"uncertain-{alignment.cue_ids[0]}-{counter}",
@@ -259,84 +496,8 @@ def build_findings(
                                 cue_ids=alignment.cue_ids,
                                 start_ms=alignment.start_ms,
                                 end_ms=alignment.end_ms,
-                                title="同音差异（疑似 ASR 误识）",
-                                message=(
-                                    f"字幕「{edit.sub_text}」与识别「{edit.asr_text}」同音不一致；"
-                                    f"字幕全文该写法出现 {sub_freq} 次、另一写法 {asr_freq} 次，"
-                                    "更可能是识别误差，仅供参考。"
-                                ),
-                                subtitle_text=alignment.sub_text,
-                                asr_text=alignment.asr_text,
-                                confidence=confidence,
-                                evidence=evidence,
-                            )
-                        )
-                        continue
-                    if pinyin_ok and alignment_ok and confidence_ok and segment_ok:
-                        counter += 1
-                        corroborated = asr_freq > sub_freq or (
-                            relation == "homophone" and (confidence or 0) >= 0.97
-                        )
-                        severity = "high" if corroborated else "review"
-                        evidence = _base_evidence(alignment, j1, j2)
-                        evidence.edits = [edit]
-                        evidence.pinyin = PinyinEvidence(
-                            sub=sub_reading,
-                            asr=asr_reading,
-                            similarity=round(score, 3),
-                            relation=relation,
-                        )
-                        typo_found = True
-                        findings.append(
-                            Finding(
-                                id=f"typo-{alignment.cue_ids[0]}-{counter}",
-                                kind="typo",
-                                severity=severity,
-                                cue_ids=alignment.cue_ids,
-                                start_ms=alignment.start_ms,
-                                end_ms=alignment.end_ms,
-                                title="疑似错别字",
-                                message=(
-                                    f"字幕「{edit.sub_text}」与语音识别「{edit.asr_text}」"
-                                    f"为{'同音' if relation == 'homophone' else '近音'}"
-                                    f"关系，词级置信度 {_confidence_label(confidence)}。请人工确认。"
-                                ),
-                                subtitle_text=alignment.sub_text,
-                                asr_text=alignment.asr_text,
-                                confidence=confidence,
-                                suggestion=(
-                                    simplify(edit.asr_text)
-                                    if options.get("t2s", True)
-                                    else edit.asr_text
-                                ),
-                                evidence=evidence,
-                            )
-                        )
-                        continue
-                    if pinyin_ok and (confidence is None or confidence < threshold):
-                        counter += 1
-                        evidence = _base_evidence(alignment, j1, j2)
-                        evidence.edits = [edit]
-                        evidence.pinyin = PinyinEvidence(
-                            sub=sub_reading,
-                            asr=asr_reading,
-                            similarity=round(score, 3),
-                            relation=relation,
-                        )
-                        evidence.note = "ASR 词级置信度不足，未判定为错别字"
-                        findings.append(
-                            Finding(
-                                id=f"uncertain-{alignment.cue_ids[0]}-{counter}",
-                                kind="uncertain",
-                                severity="info",
-                                cue_ids=alignment.cue_ids,
-                                start_ms=alignment.start_ms,
-                                end_ms=alignment.end_ms,
-                                title="ASR 置信度不足",
-                                message=(
-                                    f"字幕「{edit.sub_text}」与识别「{edit.asr_text}」疑似同音，"
-                                    f"但词级置信度仅 {_confidence_label(confidence)}，需人工确认。"
-                                ),
+                                title=title,
+                                message=message,
                                 subtitle_text=alignment.sub_text,
                                 asr_text=alignment.asr_text,
                                 confidence=confidence,
@@ -351,8 +512,6 @@ def build_findings(
             total_chars = sum(
                 max(len(edit.sub_text), len(edit.asr_text)) for edit in content_edits
             )
-            if typo_found and total_chars <= 2:
-                content_edits = []
 
         if (
             content_edits
@@ -374,6 +533,34 @@ def build_findings(
                     end_ms=alignment.end_ms,
                     title="语音边界差异",
                     message="语音识别在边界处多出或漏掉少量字词，可能是分段截断；字幕内容未被否定，仅供参考。",
+                    subtitle_text=alignment.sub_text,
+                    asr_text=alignment.asr_text,
+                    confidence=_confidence(alignment, 0, len(alignment.asr_word_ids)),
+                    evidence=evidence,
+                )
+            )
+            content_edits = []
+
+        if (
+            content_edits
+            and not any(edit.op == "replace" for edit in content_edits)
+            and total_chars <= 2
+            and _cue_boundary_only(alignment, content_spans)
+        ):
+            counter += 1
+            evidence = _base_evidence(alignment, 0, len(alignment.asr_word_ids))
+            evidence.edits = content_edits
+            evidence.note = "字幕断句差异"
+            findings.append(
+                Finding(
+                    id=f"uncertain-{alignment.cue_ids[0]}-{counter}",
+                    kind="uncertain",
+                    severity="info",
+                    cue_ids=alignment.cue_ids,
+                    start_ms=alignment.start_ms,
+                    end_ms=alignment.end_ms,
+                    title="字幕断句差异",
+                    message="差异位于相邻字幕的断句处，可能是换行把同一个词拆开；字幕内容未被否定，仅供参考。",
                     subtitle_text=alignment.sub_text,
                     asr_text=alignment.asr_text,
                     confidence=_confidence(alignment, 0, len(alignment.asr_word_ids)),
@@ -423,6 +610,34 @@ def build_findings(
                     subtitle_text=alignment.sub_text,
                     asr_text="",
                     evidence=Evidence(edits=[], words=[], note="无对齐词"),
+                )
+            )
+
+        if letter_edits:
+            counter += 1
+            evidence = _base_evidence(alignment, 0, len(alignment.asr_word_ids))
+            evidence.edits = [edit for edit, _, _ in letter_edits]
+            evidence.note = "字母/数字写法差异"
+            pairs = "、".join(
+                dict.fromkeys(f"「{sub}」/「{asr}」" for _, sub, asr in letter_edits)
+            )
+            findings.append(
+                Finding(
+                    id=f"content-{alignment.cue_ids[0]}-{counter}",
+                    kind="content",
+                    severity="review",
+                    cue_ids=alignment.cue_ids,
+                    start_ms=alignment.start_ms,
+                    end_ms=alignment.end_ms,
+                    title="字母写法不一致",
+                    message=(
+                        f"字幕与语音识别在字母/数字上不一致（{pairs}），"
+                        "可能是讲解读音与字幕不符，也可能是 ASR 误识，请对照音频确认。"
+                    ),
+                    subtitle_text=alignment.sub_text,
+                    asr_text=alignment.asr_text,
+                    confidence=_confidence(alignment, 0, len(alignment.asr_word_ids)),
+                    evidence=evidence,
                 )
             )
 
@@ -483,7 +698,7 @@ def build_findings(
             )
         )
 
-    return findings
+    return _merge_repeats(findings)
 
 
 def build_summary(

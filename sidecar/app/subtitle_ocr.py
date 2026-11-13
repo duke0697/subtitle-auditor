@@ -102,6 +102,28 @@ def _read_lines(band) -> list[tuple[str, float]]:
     return _select_lines(boxes, width, band.shape[0])
 
 
+def _same_line(left: dict, right: dict) -> bool:
+    height = max(left["bottom"] - left["top"], right["bottom"] - right["top"], 1.0)
+    return abs((left["top"] + left["bottom"]) - (right["top"] + right["bottom"])) <= height
+
+
+def _join_segments(boxes: list[dict]) -> str:
+    """Concatenate same-line boxes; overlapping detector boxes repeat edge characters."""
+    text = boxes[0]["text"]
+    for previous, current in zip(boxes, boxes[1:]):
+        part = current["text"]
+        if previous["right"] - current["left"] > 0:
+            for size in range(min(len(text), len(part)), 0, -1):
+                if text.endswith(part[:size]):
+                    text += part[size:]
+                    break
+            else:
+                text += part
+        else:
+            text += part
+    return text
+
+
 def _select_lines(boxes: list[dict], width: int, height: int) -> list[tuple[str, float]]:
     """Keep only the centered subtitle band; screen labels and clipped UI art are dropped."""
     boxes = [
@@ -133,10 +155,26 @@ def _select_lines(boxes: list[dict], width: int, height: int) -> list[tuple[str,
         for item in boxes
         if item["bottom"] >= anchor["top"] - line_height * 1.2
         and max(item["left"] - anchor["right"], anchor["left"] - item["right"], 0) <= line_height
+        # Printed module labels are smaller than the burned-in subtitle; a real second
+        # subtitle line shares the same font size.
+        and 0.7 * line_height <= item["bottom"] - item["top"] <= 1.4 * line_height
         and _is_text(item["text"])
     ]
-    kept.sort(key=lambda item: (item["left"], item["top"]))
-    return [(item["text"], item["score"]) for item in kept]
+    if not kept:
+        return []
+
+    kept.sort(key=lambda item: (item["top"], item["left"]))
+    lines: list[list[dict]] = [[kept[0]]]
+    for item in kept[1:]:
+        if _same_line(lines[-1][0], item):
+            lines[-1].append(item)
+        else:
+            lines.append([item])
+    result: list[tuple[str, float]] = []
+    for line in lines:
+        line.sort(key=lambda item: item["left"])
+        result.append((_join_segments(line), min(item["score"] for item in line)))
+    return result
 
 
 def merge_samples(samples: list[tuple[float, str, float]]) -> list[OcrCue]:

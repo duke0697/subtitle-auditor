@@ -19,12 +19,23 @@ def test_left_camera_label_is_dropped():
     assert [text for text, _ in _select_lines(boxes, 640, 48)] == ["将第2组CAN通讯线束一端的蓝色线"]
 
 
-def test_two_line_staircase_subtitle_keeps_both_lines_in_reading_order():
+def test_overlapping_detector_boxes_merge_without_duplicating():
+    # RapidOCR split one subtitle line into two overlapping boxes at 3:11.
     boxes = [box("一端的蓝色线", 352, 448, 16, 36), box("将这组CAN通讯线束另一", 192, 365, 17, 37)]
-    assert [text for text, _ in _select_lines(boxes, 640, 48)] == [
-        "将这组CAN通讯线束另一",
-        "一端的蓝色线",
+    assert [text for text, _ in _select_lines(boxes, 640, 48)] == ["将这组CAN通讯线束另一端的蓝色线"]
+
+
+def test_stacked_two_line_subtitle_keeps_both_lines_in_reading_order():
+    boxes = [box("上行字幕", 190, 450, 1, 19), box("下行字幕", 190, 450, 21, 39)]
+    assert [text for text, _ in _select_lines(boxes, 640, 48)] == ["上行字幕", "下行字幕"]
+
+
+def test_small_module_label_above_subtitle_is_not_merged():
+    boxes = [
+        box("动力电池管理模块", 154, 253, 2, 17),
+        box("将第3组CAN通讯线束一端的蓝色线", 190, 449, 14, 38),
     ]
+    assert [text for text, _ in _select_lines(boxes, 640, 48)] == ["将第3组CAN通讯线束一端的蓝色线"]
 
 
 def test_change_is_ignored_until_the_next_sample_confirms_it():

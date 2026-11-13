@@ -128,6 +128,22 @@ def test_can_high_low_are_equivalent():
     assert normalize("CAN-H线路")[0] == normalize("CAN高线路")[0]
     assert normalize("CAN_L")[0] == normalize("CAN低")[0]
     assert normalize("CANH信号")[0] == normalize("CAN高信号")[0]
+    assert normalize("CAN、L的外侧端子")[0] == normalize("CAN-L的外侧端子")[0]
+
+
+def test_terminal_signs_match_spoken_words():
+    assert normalize("B+端子")[0] == normalize("B正端子")[0]
+    assert normalize("BPP-标签")[0] == normalize("BPP负标签")[0]
+    assert normalize("DCin+的")[0] == normalize("DCin正的")[0]
+
+
+def test_hyphen_between_letters_or_digits_is_not_a_sign():
+    assert normalize("T-Box中wifi")[0] == normalize("TBOX中Wi-Fi")[0]
+    assert normalize("8-10牛米")[0] == normalize("8到10牛米")[0]
+
+
+def test_concatenated_can_codes_normalize_like_separated_codes():
+    assert normalize("CAN-HCAN-L不可接反")[0] == normalize("CANH、CANL不可接反")[0]
 
 
 def test_prefix_and_gauge_units():

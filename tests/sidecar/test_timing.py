@@ -91,3 +91,29 @@ def test_global_offset_reported_even_when_spread_is_large():
     assert findings[0].title == "字幕整体时间偏移"
     assert "晚于" in message
     assert "±520" in message
+
+
+def test_ocr_source_ignores_display_lead_and_drift():
+    bundle = AlignmentBundle(
+        alignments=[],
+        global_offset_ms=900,
+        anchors=40,
+        drift_ms_per_minute=-220.0,
+        drift_total_ms=-1100.0,
+        offset_mad_ms=300,
+    )
+    options = {**DEFAULT_OPTIONS, "ocrSource": True}
+    assert not build_timing_findings([], [], bundle, options)
+
+
+def test_ocr_source_still_reports_large_offset():
+    bundle = AlignmentBundle(
+        alignments=[],
+        global_offset_ms=2200,
+        anchors=40,
+        drift_ms_per_minute=None,
+        drift_total_ms=None,
+        offset_mad_ms=300,
+    )
+    options = {**DEFAULT_OPTIONS, "ocrSource": True}
+    assert any(item.id == "timing-global-offset" for item in build_timing_findings([], [], bundle, options))

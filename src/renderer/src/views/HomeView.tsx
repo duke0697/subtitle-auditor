@@ -418,7 +418,8 @@ export default function HomeView(): React.JSX.Element {
             <section className="panel p-4">
               <div className="mb-1.5 text-[11.5px] font-medium text-ink2">审查口径</div>
               <ul className="space-y-1.5 text-[11px] leading-relaxed text-muted">
-                <li>· 错别字仅在 ASR 词级置信度高且同音/近音时提示</li>
+                <li>· 错别字仅在 ASR 词级置信度高且同音或仅声调差异时提示</li>
+                <li>· 声母/韵母混淆只标「近音差异」，不作为错别字结论</li>
                 <li>· 低置信度区域只标「不确定」，不下结论</li>
                 <li>· 所有结论均为疑似，不会自动改写字幕文件</li>
               </ul>

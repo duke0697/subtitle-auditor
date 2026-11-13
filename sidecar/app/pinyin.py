@@ -135,18 +135,25 @@ def similarity(sub_text: str, asr_text: str) -> tuple[float, str, list[str], lis
         return 0.0, "none", [], []
 
     total = 0.0
-    relation = "none"
+    weakest = 1.0
+    has_unrelated = False
     for left, right in pairs:
         score, pair_relation = _best_pair(left, right)
         total += score
-        if pair_relation != "none":
-            relation = pair_relation if relation == "none" else relation
+        weakest = min(weakest, score)
+        has_unrelated = has_unrelated or pair_relation == "none"
     average = total / len(pairs)
 
     display_sub = [readings[0] if (readings := char_readings(char)) else char for char in sub_chars]
     display_asr = [readings[0] if (readings := char_readings(char)) else char for char in asr_chars]
+    # The weakest character decides the relation; taking the first differing pair made
+    # the verdict depend on character order.
     if average >= 0.99:
         relation = "homophone"
-    elif average >= 0.85 and relation == "homophone":
+    elif weakest >= 0.9:
         relation = "tone"
+    elif not has_unrelated:
+        relation = "confusion"
+    else:
+        relation = "none"
     return average, relation, display_sub, display_asr

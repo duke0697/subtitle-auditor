@@ -28,3 +28,8 @@ def test_sentence_level():
     score, relation, _, _ = similarity("我在家里", "我再家里")
     assert score == 1.0
     assert relation == "homophone"
+
+
+def test_relation_uses_the_weakest_pair_regardless_of_order():
+    assert similarity("在三", "再山")[1] == "confusion"
+    assert similarity("三在", "山再")[1] == "confusion"
