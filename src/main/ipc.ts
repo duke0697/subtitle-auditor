@@ -2,7 +2,7 @@ import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
 import { existsSync, readdirSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
-import type { AnalyzeRequest, AppSettings } from '@shared/contracts'
+import type { AnalysisResult, AnalyzeRequest, AppSettings } from '@shared/contracts'
 import { IPC } from '@shared/ipc'
 import { buildCsv, buildWorkbook } from './export'
 import type { FfmpegService } from './ffmpeg'
@@ -50,6 +50,12 @@ export function registerIpc(
 
   const rememberDir = (filePath: string): void => {
     settings.set({ lastDir: dirname(filePath) })
+  }
+
+  const reportFileName = (result: AnalysisResult, ext: string): string => {
+    const mediaPath = result.media?.path
+    const stem = mediaPath ? basename(mediaPath, extname(mediaPath)) : '字幕'
+    return `${stem}审查报告.${ext}`
   }
 
   sidecar.on('job-done', (payload: { jobId: string }) => jobs.finish(payload.jobId))
@@ -211,12 +217,12 @@ export function registerIpc(
   ipcMain.handle(IPC.settingsGet, () => settings.get())
   ipcMain.handle(IPC.settingsSet, (_event, patch: Partial<AppSettings>) => settings.set(patch))
 
-  ipcMain.handle(IPC.exportCsv, async (_event, result) => {
+  ipcMain.handle(IPC.exportCsv, async (_event, result: AnalysisResult) => {
     const win = getWindow()
     if (!win) return null
     const save = await dialog.showSaveDialog(win, {
       title: '导出 CSV 报告',
-      defaultPath: `字幕审查报告-${Date.now()}.csv`,
+      defaultPath: reportFileName(result, 'csv'),
       filters: [{ name: 'CSV', extensions: ['csv'] }]
     })
     if (save.canceled || !save.filePath) return null
@@ -224,12 +230,12 @@ export function registerIpc(
     return save.filePath
   })
 
-  ipcMain.handle(IPC.exportJson, async (_event, result) => {
+  ipcMain.handle(IPC.exportJson, async (_event, result: AnalysisResult) => {
     const win = getWindow()
     if (!win) return null
     const save = await dialog.showSaveDialog(win, {
       title: '导出 JSON 报告',
-      defaultPath: `字幕审查报告-${Date.now()}.json`,
+      defaultPath: reportFileName(result, 'json'),
       filters: [{ name: 'JSON', extensions: ['json'] }]
     })
     if (save.canceled || !save.filePath) return null
@@ -237,12 +243,12 @@ export function registerIpc(
     return save.filePath
   })
 
-  ipcMain.handle(IPC.exportExcel, async (_event, result) => {
+  ipcMain.handle(IPC.exportExcel, async (_event, result: AnalysisResult) => {
     const win = getWindow()
     if (!win) return null
     const save = await dialog.showSaveDialog(win, {
       title: '导出 Excel 报告',
-      defaultPath: `字幕审查报告-${Date.now()}.xlsx`,
+      defaultPath: reportFileName(result, 'xlsx'),
       filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
     })
     if (save.canceled || !save.filePath) return null
